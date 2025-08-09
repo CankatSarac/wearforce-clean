@@ -1,0 +1,407 @@
+{
+  "realm": "wearforce-clean",
+  "enabled": true,
+  "displayName": "WearForce Platform",
+  "displayNameHtml": "<div class=\"kc-logo-text\"><span>WearForce</span></div>",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": true,
+  "rememberMe": true,
+  "verifyEmail": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "maxFailureWaitSeconds": 900,
+  "minimumQuickLoginWaitSeconds": 60,
+  "waitIncrementSeconds": 60,
+  "quickLoginCheckMilliSeconds": 1000,
+  "maxDeltaTimeSeconds": 43200,
+  "failureFactor": 30,
+  "defaultRoles": ["offline_access", "uma_authorization", "default-roles-wearforce-clean"],
+  "requiredCredentials": ["password"],
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyInitialCounter": 0,
+  "otpPolicyDigits": 6,
+  "otpPolicyLookAheadWindow": 1,
+  "otpPolicyPeriod": 30,
+  "otpSupportedApplications": ["FreeOTP", "Google Authenticator"],
+  "webAuthnPolicyRpEntityName": "WearForce-Clean",
+  "webAuthnPolicySignatureAlgorithms": ["ES256"],
+  "passwordPolicy": "length(12) and digits(1) and lowerCase(1) and upperCase(1) and specialChars(1) and notUsername and passwordHistory(5)",
+  "users": [
+    {
+      "username": "admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "System",
+      "lastName": "Administrator",
+      "email": "admin@wearforce.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "WearForce2025!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["admin", "super_admin"],
+      "clientRoles": {
+        "wearforce-gateway": ["admin"],
+        "wearforce-mobile": ["admin"],
+        "wearforce-web": ["admin"],
+        "wearforce-wearables": ["admin"]
+      }
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "super_admin",
+        "description": "Super administrator with full system access",
+        "composite": false
+      },
+      {
+        "name": "admin",
+        "description": "Administrator role",
+        "composite": false
+      },
+      {
+        "name": "crm_admin",
+        "description": "CRM Administrator",
+        "composite": false
+      },
+      {
+        "name": "erp_admin", 
+        "description": "ERP Administrator",
+        "composite": false
+      },
+      {
+        "name": "sales_manager",
+        "description": "Sales Manager",
+        "composite": false
+      },
+      {
+        "name": "sales_rep",
+        "description": "Sales Representative",
+        "composite": false
+      },
+      {
+        "name": "inventory_manager",
+        "description": "Inventory Manager",
+        "composite": false
+      },
+      {
+        "name": "warehouse_staff",
+        "description": "Warehouse Staff",
+        "composite": false
+      },
+      {
+        "name": "customer_service",
+        "description": "Customer Service Representative",
+        "composite": false
+      },
+      {
+        "name": "user",
+        "description": "Regular user",
+        "composite": false
+      },
+      {
+        "name": "device_user",
+        "description": "Wearable device user",
+        "composite": false
+      }
+    ]
+  },
+  "groups": [
+    {
+      "name": "Administrators",
+      "path": "/Administrators",
+      "realmRoles": ["admin", "super_admin"]
+    },
+    {
+      "name": "Sales",
+      "path": "/Sales",
+      "subGroups": [
+        {
+          "name": "Managers",
+          "path": "/Sales/Managers",
+          "realmRoles": ["sales_manager"]
+        },
+        {
+          "name": "Representatives",
+          "path": "/Sales/Representatives", 
+          "realmRoles": ["sales_rep"]
+        }
+      ]
+    },
+    {
+      "name": "Operations",
+      "path": "/Operations",
+      "subGroups": [
+        {
+          "name": "CRM",
+          "path": "/Operations/CRM",
+          "realmRoles": ["crm_admin"]
+        },
+        {
+          "name": "ERP",
+          "path": "/Operations/ERP",
+          "realmRoles": ["erp_admin"]
+        },
+        {
+          "name": "Inventory",
+          "path": "/Operations/Inventory",
+          "realmRoles": ["inventory_manager"]
+        },
+        {
+          "name": "Warehouse",
+          "path": "/Operations/Warehouse",
+          "realmRoles": ["warehouse_staff"]
+        }
+      ]
+    },
+    {
+      "name": "Support",
+      "path": "/Support",
+      "realmRoles": ["customer_service"]
+    },
+    {
+      "name": "Users",
+      "path": "/Users",
+      "realmRoles": ["user"]
+    },
+    {
+      "name": "Devices",
+      "path": "/Devices",
+      "realmRoles": ["device_user"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "wearforce-gateway",
+      "name": "WearForce API Gateway",
+      "description": "Backend API Gateway Service",
+      "enabled": true,
+      "bearerOnly": true,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "3600",
+        "client.session.idle.timeout": "1800",
+        "client.session.max.lifespan": "36000"
+      }
+    },
+    {
+      "clientId": "wearforce-web",
+      "name": "WearForce Web Application",
+      "description": "React Web Application",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "https://*.wearforce.io/*",
+        "https://wearforce.io/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "https://*.wearforce.io",
+        "https://wearforce.io"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.lifespan": "1800",
+        "client.session.idle.timeout": "1800",
+        "client.session.max.lifespan": "36000"
+      }
+    },
+    {
+      "clientId": "wearforce-mobile",
+      "name": "WearForce Mobile Application", 
+      "description": "React Native Mobile Application",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": [
+        "wearforce://oauth/callback",
+        "com.wearforce.mobile://oauth/callback",
+        "http://localhost:19006/*"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "access.token.lifespan": "3600",
+        "client.session.idle.timeout": "1800",
+        "client.session.max.lifespan": "43200"
+      }
+    },
+    {
+      "clientId": "wearforce-wearables",
+      "name": "WearForce Wearable Devices",
+      "description": "WatchOS and WearOS Applications",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true",
+        "oidc.ciba.grant.enabled": "false",
+        "access.token.lifespan": "7200",
+        "client.session.idle.timeout": "3600",
+        "client.session.max.lifespan": "86400"
+      }
+    },
+    {
+      "clientId": "wearforce-services",
+      "name": "WearForce Backend Services",
+      "description": "Service-to-Service Authentication",
+      "enabled": true,
+      "bearerOnly": false,
+      "publicClient": false,
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "protocol": "openid-connect",
+      "secret": "${SERVICE_CLIENT_SECRET:wearforce-services-secret-2025}",
+      "attributes": {
+        "access.token.lifespan": "1800",
+        "client.session.idle.timeout": "900",
+        "client.session.max.lifespan": "7200"
+      }
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "wearforce-api",
+      "description": "Access to WearForce API endpoints",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Access to WearForce API"
+      },
+      "protocolMappers": [
+        {
+          "name": "wearforce-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "wearforce-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "device-info",
+      "description": "Device information for wearables",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "true",
+        "consent.screen.text": "Device information"
+      },
+      "protocolMappers": [
+        {
+          "name": "device-type",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "device_type",
+            "claim.name": "device_type",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "device-id",
+          "protocol": "openid-connect", 
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "device_id",
+            "claim.name": "device_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": [
+    "role_list",
+    "profile",
+    "email",
+    "wearforce-api"
+  ],
+  "defaultOptionalClientScopes": [
+    "offline_access",
+    "address",
+    "phone",
+    "device-info"
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "wearforce-device-flow",
+      "description": "Device authorization flow for wearables",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "device-validate-user-code",
+          "requirement": "REQUIRED",
+          "priority": 10
+        },
+        {
+          "authenticator": "device-validate-user",
+          "requirement": "REQUIRED", 
+          "priority": 20
+        }
+      ]
+    }
+  ],
+  "browserFlow": "browser",
+  "registrationFlow": "registration",
+  "directGrantFlow": "direct grant",
+  "resetCredentialsFlow": "reset credentials",
+  "clientAuthenticationFlow": "clients",
+  "dockerAuthenticationFlow": "docker auth",
+  "attributes": {
+    "cibaBackchannelTokenDeliveryMode": "poll",
+    "cibaExpiresIn": "120",
+    "cibaInterval": "5",
+    "cibaAuthRequestedUserHint": "login_hint",
+    "parRequestUriLifespan": "60",
+    "frontendUrl": "",
+    "consoleDisplayName": "WearForce Keycloak",
+    "acr.loa.map": "{}"
+  },
+  "keycloakVersion": "23.0.0",
+  "userManagedAccessAllowed": false,
+  "clientProfiles": {
+    "profiles": []
+  },
+  "clientPolicies": {
+    "policies": []
+  }
+}

@@ -1,0 +1,60 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # NLU Service metrics
+  - job_name: 'nlu-service'
+    static_configs:
+      - targets: ['nlu-service:8003']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # LLM Service metrics
+  - job_name: 'llm-service'
+    static_configs:
+      - targets: ['llm-service:8004']
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  # RAG Service metrics
+  - job_name: 'rag-service'
+    static_configs:
+      - targets: ['rag-service:8005']
+    metrics_path: /metrics
+    scrape_interval: 15s
+
+  # Redis metrics
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: /metrics
+
+  # PostgreSQL metrics
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+    metrics_path: /metrics
+
+  # Qdrant metrics
+  - job_name: 'qdrant'
+    static_configs:
+      - targets: ['qdrant:6333']
+    metrics_path: /metrics
+
+  # Mock services health
+  - job_name: 'crm-mock'
+    static_configs:
+      - targets: ['crm-mock:1080']
+    metrics_path: /mockserver/status
+    scrape_interval: 30s
+
+  - job_name: 'erp-mock'
+    static_configs:
+      - targets: ['erp-mock:1080']
+    metrics_path: /mockserver/status
+    scrape_interval: 30s

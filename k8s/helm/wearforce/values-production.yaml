@@ -1,0 +1,332 @@
+# Production environment overrides
+global:
+  environment: production
+  domain: wearforce-clean.io
+  image:
+    pullPolicy: IfNotPresent  # Use cached images in production
+
+# Full production resource allocation
+gateway:
+  replicaCount: 5
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 5
+    maxReplicas: 15
+    targetCPUUtilizationPercentage: 60
+    targetMemoryUtilizationPercentage: 70
+
+# AI Services with full resources
+aiServices:
+  llm:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 16Gi
+        nvidia.com/gpu: 1
+      requests:
+        cpu: 2000m
+        memory: 8Gi
+        nvidia.com/gpu: 1
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 60
+
+  nlu:
+    replicaCount: 5
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 5
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 60
+
+  rag:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 60
+
+  stt:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 6
+
+  tts:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 6
+
+# Business Services with full resources
+businessServices:
+  graphql:
+    replicaCount: 5
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 5
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 60
+
+  crm:
+    replicaCount: 5
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 5
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 60
+
+  erp:
+    replicaCount: 5
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 5
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 60
+
+  notification:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 60
+
+# Production infrastructure with high availability
+infrastructure:
+  postgresql:
+    primary:
+      persistence:
+        size: 200Gi
+        storageClass: gp3  # Use faster storage in production
+      resources:
+        limits:
+          cpu: 4000m
+          memory: 8Gi
+        requests:
+          cpu: 1000m
+          memory: 2Gi
+    readReplicas:
+      replicaCount: 3
+      persistence:
+        size: 200Gi
+        storageClass: gp3
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+
+  redis:
+    architecture: replication
+    master:
+      persistence:
+        size: 50Gi
+        storageClass: gp3
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+    replica:
+      replicaCount: 3
+      persistence:
+        size: 50Gi
+        storageClass: gp3
+
+  qdrant:
+    replicaCount: 3
+    persistence:
+      size: 100Gi
+      storageClass: gp3
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# Production ingress with full TLS
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/rate-limit-burst-multiplier: "2"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: wearforce-clean.io
+      paths:
+        - path: /
+          pathType: Prefix
+          service: gateway
+          port: 8080
+        - path: /api/graphql
+          pathType: Prefix
+          service: graphql
+          port: 8000
+    - host: api.wearforce-clean.io
+      paths:
+        - path: /
+          pathType: Prefix
+          service: gateway
+          port: 8080
+  tls:
+    - secretName: wearforce-clean-tls
+      hosts:
+        - wearforce-clean.io
+        - api.wearforce-clean.io
+
+# Full monitoring stack
+monitoring:
+  prometheus:
+    enabled: true
+    server:
+      persistentVolume:
+        size: 100Gi
+        storageClass: gp3
+      resources:
+        limits:
+          cpu: 4000m
+          memory: 8Gi
+        requests:
+          cpu: 1000m
+          memory: 2Gi
+      retention: "30d"
+      
+  grafana:
+    enabled: true
+    persistence:
+      size: 20Gi
+      storageClass: gp3
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      
+  jaeger:
+    enabled: true
+    collector:
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+    query:
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+        requests:
+          cpu: 250m
+          memory: 512Mi
+
+# Production security settings
+security:
+  podSecurityPolicy:
+    enabled: true
+  networkPolicy:
+    enabled: true
+  rbac:
+    create: true
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/wearforce-clean-production-role
+
+# Production backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: "90d"  # 3 months retention
+  s3:
+    bucket: wearforce-clean-production-backups
+    region: us-west-2
+    encryptionKey: alias/wearforce-clean-backup-key
+
+# Blue-Green deployment configuration
+blueGreen:
+  enabled: true
+  activeColor: blue
+  inactiveColor: green

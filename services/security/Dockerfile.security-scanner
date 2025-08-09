@@ -1,0 +1,51 @@
+# Security Scanner Dockerfile
+FROM python:3.11-slim
+
+# Install system dependencies for security tools
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    build-essential \
+    nmap \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Trivy for container scanning
+RUN wget -qO- https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+
+# Install testssl.sh for SSL/TLS testing
+RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.git /opt/testssl.sh \
+    && ln -s /opt/testssl.sh/testssl.sh /usr/local/bin/testssl.sh
+
+# Install security scanning tools
+RUN pip install --no-cache-dir \
+    bandit \
+    safety \
+    semgrep \
+    pip-audit \
+    cyclonedx-bom
+
+# Set working directory
+WORKDIR /app
+
+# Copy security scanner code
+COPY security/vulnerability_scanner.py /app/
+COPY security/security_api.py /app/
+COPY requirements.txt /app/
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Create non-root user
+RUN useradd -m -u 1000 scanner && chown -R scanner:scanner /app
+USER scanner
+
+# Expose port for API
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Command to run the security scanner API
+CMD ["python", "security_api.py"]

@@ -1,0 +1,64 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: wearforce-clean
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "{{ .Values.gateway.service.metrics.port }}"
+    prometheus.io/path: "/metrics"
+spec:
+  type: {{ .Values.gateway.service.type }}
+  ports:
+  - port: {{ .Values.gateway.service.http.port }}
+    targetPort: {{ .Values.gateway.service.http.targetPort }}
+    protocol: TCP
+    name: http
+  - port: {{ .Values.gateway.service.grpc.port }}
+    targetPort: {{ .Values.gateway.service.grpc.targetPort }}
+    protocol: TCP
+    name: grpc
+  - port: {{ .Values.gateway.service.metrics.port }}
+    targetPort: {{ .Values.gateway.service.metrics.targetPort }}
+    protocol: TCP
+    name: metrics
+  selector:
+    {{- include "wearforce-clean.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+    {{- if .Values.blueGreen.enabled }}
+    environment: {{ .Values.blueGreen.activeColor | default "blue" }}
+    {{- end }}
+
+---
+# Headless service for direct pod communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-gateway-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: wearforce-clean
+spec:
+  clusterIP: None
+  ports:
+  - port: {{ .Values.gateway.service.http.port }}
+    targetPort: {{ .Values.gateway.service.http.targetPort }}
+    protocol: TCP
+    name: http
+  - port: {{ .Values.gateway.service.grpc.port }}
+    targetPort: {{ .Values.gateway.service.grpc.targetPort }}
+    protocol: TCP
+    name: grpc
+  selector:
+    {{- include "wearforce-clean.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+{{- end }}

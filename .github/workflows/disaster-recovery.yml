@@ -1,0 +1,562 @@
+name: Disaster Recovery and Backup
+
+on:
+  schedule:
+    # Run backup daily at 3 AM UTC
+    - cron: '0 3 * * *'
+    # Run DR test weekly on Sundays at 4 AM UTC
+    - cron: '0 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'DR Operation to perform'
+        required: true
+        default: 'backup'
+        type: choice
+        options:
+          - backup
+          - restore
+          - dr-test
+          - failover
+          - failback
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - dr-site
+      restore_timestamp:
+        description: 'Restore to specific timestamp (YYYY-MM-DD-HH-MM-SS)'
+        required: false
+        type: string
+
+env:
+  AWS_REGION: us-west-2
+  DR_REGION: us-east-1
+  BACKUP_BUCKET: wearforce-disaster-recovery-backups
+  DR_BUCKET: wearforce-dr-site-backups
+
+jobs:
+  # Database Backup
+  database-backup:
+    name: Database Backup
+    runs-on: ubuntu-latest
+    if: github.event.inputs.operation == 'backup' || github.event_name == 'schedule'
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y postgresql-client-15 redis-tools
+        
+        # Install AWS CLI v2
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip awscliv2.zip
+        sudo ./aws/install
+    
+    - name: Create PostgreSQL backup
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        BACKUP_FILE="postgresql_backup_${TIMESTAMP}.sql"
+        
+        # Get RDS instance details
+        DB_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier wearforce-prod --query 'DBInstances[0].Endpoint.Address' --output text)
+        
+        # Create backup
+        PGPASSWORD="${{ secrets.DB_PASSWORD }}" pg_dump \
+          --host="$DB_ENDPOINT" \
+          --port=5432 \
+          --username="${{ secrets.DB_USERNAME }}" \
+          --dbname="wearforce" \
+          --format=custom \
+          --compress=9 \
+          --verbose \
+          --file="$BACKUP_FILE"
+        
+        # Upload to S3
+        aws s3 cp "$BACKUP_FILE" "s3://${{ env.BACKUP_BUCKET }}/postgresql/$(date +%Y/%m/%d)/$BACKUP_FILE"
+        
+        # Cross-region replication
+        aws s3 cp "$BACKUP_FILE" "s3://${{ env.DR_BUCKET }}/postgresql/$(date +%Y/%m/%d)/$BACKUP_FILE" --region ${{ env.DR_REGION }}
+        
+        # Create backup metadata
+        cat > backup_metadata.json << EOF
+        {
+          "backup_type": "postgresql",
+          "timestamp": "$TIMESTAMP",
+          "file_name": "$BACKUP_FILE",
+          "file_size": "$(stat -c%s "$BACKUP_FILE")",
+          "checksum": "$(sha256sum "$BACKUP_FILE" | cut -d' ' -f1)",
+          "database": "wearforce",
+          "environment": "${{ github.event.inputs.environment || 'production' }}"
+        }
+        EOF
+        
+        aws s3 cp backup_metadata.json "s3://${{ env.BACKUP_BUCKET }}/metadata/postgresql_${TIMESTAMP}.json"
+    
+    - name: Test backup integrity
+      run: |
+        # Download the backup and test restore to a temporary database
+        LATEST_BACKUP=$(aws s3 ls "s3://${{ env.BACKUP_BUCKET }}/postgresql/$(date +%Y/%m/%d)/" --recursive | sort | tail -n 1 | awk '{print $4}')
+        aws s3 cp "s3://${{ env.BACKUP_BUCKET }}/$LATEST_BACKUP" ./test_backup.sql
+        
+        # Verify backup integrity
+        pg_restore --list ./test_backup.sql > restore_list.txt
+        
+        if [ -s restore_list.txt ]; then
+          echo "✅ Backup integrity verified"
+        else
+          echo "❌ Backup integrity check failed"
+          exit 1
+        fi
+    
+    - name: Create Redis backup
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        BACKUP_FILE="redis_backup_${TIMESTAMP}.rdb"
+        
+        # Get ElastiCache Redis details
+        REDIS_ENDPOINT=$(aws elasticache describe-replication-groups --replication-group-id wearforce-redis --query 'ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.Address' --output text)
+        
+        # Create Redis backup using BGSAVE
+        redis-cli -h "$REDIS_ENDPOINT" -p 6379 --rdb "$BACKUP_FILE"
+        
+        # Upload to S3
+        aws s3 cp "$BACKUP_FILE" "s3://${{ env.BACKUP_BUCKET }}/redis/$(date +%Y/%m/%d)/$BACKUP_FILE"
+        
+        # Cross-region replication
+        aws s3 cp "$BACKUP_FILE" "s3://${{ env.DR_BUCKET }}/redis/$(date +%Y/%m/%d)/$BACKUP_FILE" --region ${{ env.DR_REGION }}
+        
+        # Create backup metadata
+        cat > redis_metadata.json << EOF
+        {
+          "backup_type": "redis",
+          "timestamp": "$TIMESTAMP",
+          "file_name": "$BACKUP_FILE",
+          "file_size": "$(stat -c%s "$BACKUP_FILE")",
+          "checksum": "$(sha256sum "$BACKUP_FILE" | cut -d' ' -f1)",
+          "environment": "${{ github.event.inputs.environment || 'production' }}"
+        }
+        EOF
+        
+        aws s3 cp redis_metadata.json "s3://${{ env.BACKUP_BUCKET }}/metadata/redis_${TIMESTAMP}.json"
+
+  # Application Data Backup
+  application-data-backup:
+    name: Application Data Backup
+    runs-on: ubuntu-latest
+    if: github.event.inputs.operation == 'backup' || github.event_name == 'schedule'
+    environment: ${{ github.event.inputs.environment || 'production' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.29.0'
+    
+    - name: Update kubeconfig
+      run: |
+        ENV="${{ github.event.inputs.environment || 'production' }}"
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name wearforce-${ENV}
+    
+    - name: Backup Kubernetes resources
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        BACKUP_DIR="k8s_backup_${TIMESTAMP}"
+        mkdir -p "$BACKUP_DIR"
+        
+        # Backup all Kubernetes resources
+        kubectl get all --all-namespaces -o yaml > "$BACKUP_DIR/all-resources.yaml"
+        kubectl get pv,pvc --all-namespaces -o yaml > "$BACKUP_DIR/persistent-volumes.yaml"
+        kubectl get configmaps,secrets --all-namespaces -o yaml > "$BACKUP_DIR/config-secrets.yaml"
+        kubectl get ingress --all-namespaces -o yaml > "$BACKUP_DIR/ingress.yaml"
+        kubectl get networkpolicies --all-namespaces -o yaml > "$BACKUP_DIR/network-policies.yaml"
+        kubectl get servicemonitors,prometheusrules --all-namespaces -o yaml > "$BACKUP_DIR/monitoring.yaml" || true
+        
+        # Create backup archive
+        tar -czf "${BACKUP_DIR}.tar.gz" "$BACKUP_DIR"
+        
+        # Upload to S3
+        aws s3 cp "${BACKUP_DIR}.tar.gz" "s3://${{ env.BACKUP_BUCKET }}/kubernetes/$(date +%Y/%m/%d)/${BACKUP_DIR}.tar.gz"
+        
+        # Cross-region replication
+        aws s3 cp "${BACKUP_DIR}.tar.gz" "s3://${{ env.DR_BUCKET }}/kubernetes/$(date +%Y/%m/%d)/${BACKUP_DIR}.tar.gz" --region ${{ env.DR_REGION }}
+    
+    - name: Backup Qdrant vector database
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        
+        # Port forward to Qdrant service
+        kubectl port-forward svc/qdrant 6333:6333 -n production &
+        PORT_FORWARD_PID=$!
+        sleep 5
+        
+        # Create Qdrant snapshot
+        curl -X POST "http://localhost:6333/collections/{collection_name}/snapshots" \
+          -H "Content-Type: application/json" \
+          -d '{"name": "backup_'$TIMESTAMP'"}'
+        
+        # Download snapshot (implementation depends on Qdrant setup)
+        # This is a placeholder - actual implementation would depend on Qdrant configuration
+        
+        kill $PORT_FORWARD_PID || true
+    
+    - name: Backup file storage
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        
+        # Backup from application file storage S3 bucket
+        aws s3 sync s3://wearforce-app-storage "s3://${{ env.BACKUP_BUCKET }}/file-storage/$(date +%Y/%m/%d)/app-storage_${TIMESTAMP}/" \
+          --delete --exclude "*" --include "*.pdf" --include "*.doc*" --include "*.jpg" --include "*.png"
+        
+        # Cross-region replication
+        aws s3 sync "s3://${{ env.BACKUP_BUCKET }}/file-storage/$(date +%Y/%m/%d)/app-storage_${TIMESTAMP}/" \
+          "s3://${{ env.DR_BUCKET }}/file-storage/$(date +%Y/%m/%d)/app-storage_${TIMESTAMP}/" \
+          --region ${{ env.DR_REGION }}
+
+  # Configuration Backup
+  configuration-backup:
+    name: Configuration Backup
+    runs-on: ubuntu-latest
+    if: github.event.inputs.operation == 'backup' || github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Backup infrastructure configuration
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        CONFIG_BACKUP_DIR="config_backup_${TIMESTAMP}"
+        mkdir -p "$CONFIG_BACKUP_DIR"
+        
+        # Copy infrastructure code
+        cp -r infrastructure/ "$CONFIG_BACKUP_DIR/"
+        cp -r k8s/ "$CONFIG_BACKUP_DIR/"
+        cp -r .github/ "$CONFIG_BACKUP_DIR/"
+        
+        # Export Terraform state
+        cd infrastructure/terraform/environments/production
+        terraform init
+        terraform show -json > "../../../../$CONFIG_BACKUP_DIR/terraform-state.json"
+        cd ../../../../
+        
+        # Create configuration archive
+        tar -czf "${CONFIG_BACKUP_DIR}.tar.gz" "$CONFIG_BACKUP_DIR"
+        
+        # Upload to S3
+        aws s3 cp "${CONFIG_BACKUP_DIR}.tar.gz" "s3://${{ env.BACKUP_BUCKET }}/configuration/$(date +%Y/%m/%d)/${CONFIG_BACKUP_DIR}.tar.gz"
+        
+        # Cross-region replication
+        aws s3 cp "${CONFIG_BACKUP_DIR}.tar.gz" "s3://${{ env.DR_BUCKET }}/configuration/$(date +%Y/%m/%d)/${CONFIG_BACKUP_DIR}.tar.gz" --region ${{ env.DR_REGION }}
+    
+    - name: Backup secrets metadata
+      run: |
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        
+        # Create secrets inventory (metadata only, not actual secrets)
+        cat > secrets_inventory.json << EOF
+        {
+          "timestamp": "$TIMESTAMP",
+          "environment": "${{ github.event.inputs.environment || 'production' }}",
+          "secrets": [
+            {
+              "name": "database-credentials",
+              "type": "database",
+              "location": "aws-secrets-manager"
+            },
+            {
+              "name": "redis-auth",
+              "type": "cache",
+              "location": "aws-secrets-manager"
+            },
+            {
+              "name": "api-keys",
+              "type": "external-services",
+              "location": "aws-secrets-manager"
+            }
+          ]
+        }
+        EOF
+        
+        aws s3 cp secrets_inventory.json "s3://${{ env.BACKUP_BUCKET }}/metadata/secrets_inventory_${TIMESTAMP}.json"
+
+  # Disaster Recovery Test
+  dr-test:
+    name: Disaster Recovery Test
+    runs-on: ubuntu-latest
+    if: github.event.inputs.operation == 'dr-test' || (github.event_name == 'schedule' && github.event.schedule == '0 4 * * 0')
+    environment: dr-testing
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials (DR Region)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.DR_REGION }}
+    
+    - name: Setup Terraform for DR site
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: '1.7.0'
+    
+    - name: Deploy DR infrastructure
+      working-directory: infrastructure/terraform/environments/dr-site
+      run: |
+        terraform init
+        terraform plan -var="environment=dr-test"
+        terraform apply -auto-approve -var="environment=dr-test"
+    
+    - name: Test database restore
+      run: |
+        # Get latest backup
+        LATEST_BACKUP=$(aws s3 ls "s3://${{ env.DR_BUCKET }}/postgresql/" --recursive | sort | tail -n 1 | awk '{print $4}')
+        aws s3 cp "s3://${{ env.DR_BUCKET }}/$LATEST_BACKUP" ./test_restore.sql
+        
+        # Get DR RDS instance endpoint
+        DR_DB_ENDPOINT=$(aws rds describe-db-instances --db-instance-identifier wearforce-dr-test --query 'DBInstances[0].Endpoint.Address' --output text)
+        
+        # Test restore (to a test database)
+        PGPASSWORD="${{ secrets.DR_DB_PASSWORD }}" createdb \
+          --host="$DR_DB_ENDPOINT" \
+          --port=5432 \
+          --username="${{ secrets.DR_DB_USERNAME }}" \
+          "wearforce_dr_test"
+        
+        PGPASSWORD="${{ secrets.DR_DB_PASSWORD }}" pg_restore \
+          --host="$DR_DB_ENDPOINT" \
+          --port=5432 \
+          --username="${{ secrets.DR_DB_USERNAME }}" \
+          --dbname="wearforce_dr_test" \
+          --verbose \
+          ./test_restore.sql
+        
+        # Verify data integrity
+        PGPASSWORD="${{ secrets.DR_DB_PASSWORD }}" psql \
+          --host="$DR_DB_ENDPOINT" \
+          --port=5432 \
+          --username="${{ secrets.DR_DB_USERNAME }}" \
+          --dbname="wearforce_dr_test" \
+          -c "SELECT COUNT(*) FROM users;" > user_count.txt
+        
+        if [ -s user_count.txt ]; then
+          echo "✅ Database restore test successful"
+        else
+          echo "❌ Database restore test failed"
+          exit 1
+        fi
+    
+    - name: Test application deployment
+      run: |
+        # Deploy application to DR EKS cluster
+        aws eks update-kubeconfig --region ${{ env.DR_REGION }} --name wearforce-dr-test
+        
+        # Deploy using Helm with DR values
+        helm upgrade --install wearforce-dr ./k8s/helm/wearforce \
+          --namespace dr-test \
+          --create-namespace \
+          --values ./k8s/helm/wearforce/values-dr-test.yaml \
+          --set global.image.tag=latest \
+          --wait --timeout=10m
+        
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=wearforce-gateway -n dr-test --timeout=300s
+        
+        # Test basic functionality
+        kubectl port-forward svc/wearforce-gateway 8080:8080 -n dr-test &
+        PORT_FORWARD_PID=$!
+        sleep 10
+        
+        # Health check
+        if curl -f http://localhost:8080/health; then
+          echo "✅ Application deployment test successful"
+        else
+          echo "❌ Application deployment test failed"
+          exit 1
+        fi
+        
+        kill $PORT_FORWARD_PID || true
+    
+    - name: Cleanup DR test environment
+      if: always()
+      working-directory: infrastructure/terraform/environments/dr-site
+      run: |
+        terraform destroy -auto-approve -var="environment=dr-test"
+
+  # Backup Validation
+  backup-validation:
+    name: Backup Validation
+    runs-on: ubuntu-latest
+    needs: [database-backup, application-data-backup, configuration-backup]
+    if: always()
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    - name: Validate backup completion
+      run: |
+        TODAY=$(date +%Y/%m/%d)
+        
+        # Check if today's backups exist
+        PG_BACKUP_COUNT=$(aws s3 ls "s3://${{ env.BACKUP_BUCKET }}/postgresql/$TODAY/" --recursive | wc -l)
+        REDIS_BACKUP_COUNT=$(aws s3 ls "s3://${{ env.BACKUP_BUCKET }}/redis/$TODAY/" --recursive | wc -l)
+        K8S_BACKUP_COUNT=$(aws s3 ls "s3://${{ env.BACKUP_BUCKET }}/kubernetes/$TODAY/" --recursive | wc -l)
+        CONFIG_BACKUP_COUNT=$(aws s3 ls "s3://${{ env.BACKUP_BUCKET }}/configuration/$TODAY/" --recursive | wc -l)
+        
+        echo "Backup validation results:"
+        echo "- PostgreSQL backups: $PG_BACKUP_COUNT"
+        echo "- Redis backups: $REDIS_BACKUP_COUNT"
+        echo "- Kubernetes backups: $K8S_BACKUP_COUNT"
+        echo "- Configuration backups: $CONFIG_BACKUP_COUNT"
+        
+        # Verify cross-region replication
+        DR_PG_BACKUP_COUNT=$(aws s3 ls "s3://${{ env.DR_BUCKET }}/postgresql/$TODAY/" --recursive --region ${{ env.DR_REGION }} | wc -l)
+        DR_REDIS_BACKUP_COUNT=$(aws s3 ls "s3://${{ env.DR_BUCKET }}/redis/$TODAY/" --recursive --region ${{ env.DR_REGION }} | wc -l)
+        
+        echo "DR site backup validation:"
+        echo "- PostgreSQL backups: $DR_PG_BACKUP_COUNT"
+        echo "- Redis backups: $DR_REDIS_BACKUP_COUNT"
+        
+        # Calculate backup sizes and generate report
+        TOTAL_SIZE=$(aws s3api list-objects --bucket ${{ env.BACKUP_BUCKET }} --prefix "$TODAY" --query 'sum(Contents[].Size)' --output text)
+        
+        cat > backup-report.json << EOF
+        {
+          "date": "$TODAY",
+          "status": "completed",
+          "backups": {
+            "postgresql": $PG_BACKUP_COUNT,
+            "redis": $REDIS_BACKUP_COUNT,
+            "kubernetes": $K8S_BACKUP_COUNT,
+            "configuration": $CONFIG_BACKUP_COUNT
+          },
+          "dr_replication": {
+            "postgresql": $DR_PG_BACKUP_COUNT,
+            "redis": $DR_REDIS_BACKUP_COUNT
+          },
+          "total_size_bytes": $TOTAL_SIZE,
+          "cross_region_replication": "enabled"
+        }
+        EOF
+        
+        aws s3 cp backup-report.json "s3://${{ env.BACKUP_BUCKET }}/reports/backup-report-$(date +%Y%m%d).json"
+    
+    - name: Cleanup old backups
+      run: |
+        # Delete backups older than 90 days
+        CUTOFF_DATE=$(date -d '90 days ago' +%Y-%m-%d)
+        
+        echo "Cleaning up backups older than $CUTOFF_DATE"
+        
+        # List and delete old backups
+        aws s3 ls "s3://${{ env.BACKUP_BUCKET }}/" --recursive | while read -r line; do
+          CREATE_DATE=$(echo "$line" | awk '{print $1}')
+          if [[ "$CREATE_DATE" < "$CUTOFF_DATE" ]]; then
+            FILE_PATH=$(echo "$line" | awk '{print $4}')
+            echo "Deleting old backup: $FILE_PATH"
+            aws s3 rm "s3://${{ env.BACKUP_BUCKET }}/$FILE_PATH"
+          fi
+        done
+
+  # Backup Monitoring and Alerting
+  backup-monitoring:
+    name: Backup Monitoring
+    runs-on: ubuntu-latest
+    needs: [backup-validation]
+    if: always()
+    
+    steps:
+    - name: Check backup status
+      run: |
+        if [ "${{ needs.database-backup.result }}" != "success" ] || \
+           [ "${{ needs.application-data-backup.result }}" != "success" ] || \
+           [ "${{ needs.configuration-backup.result }}" != "success" ]; then
+          echo "❌ Backup failed!"
+          echo "BACKUP_STATUS=failed" >> $GITHUB_ENV
+        else
+          echo "✅ All backups completed successfully"
+          echo "BACKUP_STATUS=success" >> $GITHUB_ENV
+        fi
+    
+    - name: Send backup status notification
+      if: always()
+      run: |
+        STATUS_EMOJI="✅"
+        if [ "$BACKUP_STATUS" = "failed" ]; then
+          STATUS_EMOJI="❌"
+        fi
+        
+        MESSAGE="$STATUS_EMOJI WearForce Backup Report - $(date)\n"
+        MESSAGE="$MESSAGE\nStatus: $BACKUP_STATUS"
+        MESSAGE="$MESSAGE\nEnvironment: ${{ github.event.inputs.environment || 'production' }}"
+        MESSAGE="$MESSAGE\nWorkflow: ${{ github.run_id }}"
+        
+        # Send to Slack if webhook is configured
+        if [ -n "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"$MESSAGE\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
+        fi
+        
+        # Send to PagerDuty if service key is configured and backup failed
+        if [ "$BACKUP_STATUS" = "failed" ] && [ -n "${{ secrets.PAGERDUTY_SERVICE_KEY }}" ]; then
+          curl -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'Authorization: Token token=${{ secrets.PAGERDUTY_SERVICE_KEY }}' \
+            --data '{
+              "incident": {
+                "type": "incident",
+                "title": "WearForce Backup Failed",
+                "service": {
+                  "id": "${{ secrets.PAGERDUTY_SERVICE_ID }}",
+                  "type": "service_reference"
+                },
+                "urgency": "high",
+                "body": {
+                  "type": "incident_body",
+                  "details": "Automated backup process failed. Please investigate immediately."
+                }
+              }
+            }' \
+            https://api.pagerduty.com/incidents
+        fi

@@ -1,0 +1,370 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '18'
+  PNPM_VERSION: '8'
+
+jobs:
+  # Detect changes to determine what to build
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.changes.outputs.web }}
+      mobile: ${{ steps.changes.outputs.mobile }}
+      shared: ${{ steps.changes.outputs.shared }}
+      watchos: ${{ steps.changes.outputs.watchos }}
+      wear-os: ${{ steps.changes.outputs.wear-os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect changes
+        uses: dorny/paths-filter@v2
+        id: changes
+        with:
+          filters: |
+            web:
+              - 'clients/web/**'
+              - 'clients/shared/**'
+            mobile:
+              - 'clients/mobile/**'
+              - 'clients/shared/**'
+            shared:
+              - 'clients/shared/**'
+            watchos:
+              - 'clients/watchos/**'
+            wear-os:
+              - 'clients/wear-os/**'
+
+  # Shared code linting and testing
+  shared:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.shared == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: clients/shared/package.json
+
+      - name: Install dependencies
+        working-directory: clients/shared
+        run: npm ci
+
+      - name: Type check
+        working-directory: clients/shared
+        run: npm run type-check
+
+      - name: Lint
+        working-directory: clients/shared
+        run: npm run lint
+
+      - name: Test
+        working-directory: clients/shared
+        run: npm run test
+
+  # Web application CI/CD
+  web:
+    runs-on: ubuntu-latest
+    needs: [changes, shared]
+    if: ${{ always() && (needs.changes.outputs.web == 'true' || needs.changes.outputs.shared == 'true') }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: clients/web/package.json
+
+      - name: Install dependencies
+        working-directory: clients/web
+        run: npm ci
+
+      - name: Type check
+        working-directory: clients/web
+        run: npm run type-check
+
+      - name: Lint
+        working-directory: clients/web
+        run: npm run lint
+
+      - name: Format check
+        working-directory: clients/web
+        run: npm run format:check
+
+      - name: Test
+        working-directory: clients/web
+        run: npm run test
+
+      - name: Test coverage
+        working-directory: clients/web
+        run: npm run test:coverage
+
+      - name: Build
+        working-directory: clients/web
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: ${{ secrets.VITE_API_BASE_URL }}
+          VITE_KEYCLOAK_URL: ${{ secrets.VITE_KEYCLOAK_URL }}
+          VITE_KEYCLOAK_REALM: ${{ secrets.VITE_KEYCLOAK_REALM }}
+          VITE_KEYCLOAK_CLIENT_ID: ${{ secrets.VITE_KEYCLOAK_CLIENT_ID }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: clients/web/dist
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          directory: clients/web/coverage
+          flags: web
+
+  # React Native mobile app CI
+  mobile:
+    runs-on: ubuntu-latest
+    needs: [changes, shared]
+    if: ${{ always() && (needs.changes.outputs.mobile == 'true' || needs.changes.outputs.shared == 'true') }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: clients/mobile/package.json
+
+      - name: Install dependencies
+        working-directory: clients/mobile
+        run: npm ci
+
+      - name: Type check
+        working-directory: clients/mobile
+        run: npm run type-check
+
+      - name: Lint
+        working-directory: clients/mobile
+        run: npm run lint
+
+      - name: Format check
+        working-directory: clients/mobile
+        run: npm run format:check
+
+      - name: Test
+        working-directory: clients/mobile
+        run: npm run test
+
+      - name: Test coverage
+        working-directory: clients/mobile
+        run: npm run test:coverage
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          directory: clients/mobile/coverage
+          flags: mobile
+
+  # Android build
+  android:
+    runs-on: ubuntu-latest
+    needs: [changes, mobile]
+    if: ${{ always() && needs.changes.outputs.mobile == 'true' && github.event_name == 'push' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: clients/mobile/package.json
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        working-directory: clients/mobile
+        run: npm ci
+
+      - name: Build Android
+        working-directory: clients/mobile
+        run: npm run build:android
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: clients/mobile/android/app/build/outputs/apk/release/
+
+  # iOS build (requires macOS)
+  ios:
+    runs-on: macos-latest
+    needs: [changes, mobile]
+    if: ${{ always() && needs.changes.outputs.mobile == 'true' && github.event_name == 'push' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: clients/mobile/package.json
+
+      - name: Install dependencies
+        working-directory: clients/mobile
+        run: npm ci
+
+      - name: Install CocoaPods
+        working-directory: clients/mobile
+        run: npm run pods
+
+      - name: Build iOS
+        working-directory: clients/mobile
+        run: npm run build:ios
+
+  # Wear OS build
+  wear-os:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.wear-os == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Wear OS
+        working-directory: clients/wear-os
+        run: ./gradlew assembleRelease
+
+      - name: Upload Wear OS APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: wear-os-apk
+          path: clients/wear-os/app/build/outputs/apk/release/
+
+  # watchOS build (requires macOS)
+  watchos:
+    runs-on: macos-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.watchos == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build watchOS
+        working-directory: clients/watchos
+        run: |
+          xcodebuild \
+            -project WearForce.xcodeproj \
+            -scheme WearForce \
+            -configuration Release \
+            -destination 'platform=watchOS Simulator,name=Apple Watch Series 9 (45mm)' \
+            build
+
+  # Security scanning
+  security:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Deploy to development environment
+  deploy-dev:
+    runs-on: ubuntu-latest
+    needs: [web, mobile]
+    if: ${{ always() && github.ref == 'refs/heads/develop' && github.event_name == 'push' }}
+    environment: development
+    steps:
+      - name: Download web build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: ./web-build
+
+      - name: Deploy to development
+        run: |
+          echo "Deploying to development environment..."
+          # Add deployment steps here
+
+  # Deploy to production environment
+  deploy-prod:
+    runs-on: ubuntu-latest
+    needs: [web, mobile, security]
+    if: ${{ always() && github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+    environment: production
+    steps:
+      - name: Download web build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: ./web-build
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          # Add deployment steps here
+
+  # Notification on completion
+  notify:
+    runs-on: ubuntu-latest
+    needs: [web, mobile, android, ios, wear-os, watchos]
+    if: ${{ always() }}
+    steps:
+      - name: Notify team
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          echo "CI/CD pipeline completed for ${{ github.ref }}"
+          # Add notification logic here (Slack, Discord, email, etc.)

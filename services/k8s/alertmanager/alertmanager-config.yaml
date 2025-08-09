@@ -1,0 +1,442 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+  labels:
+    app: alertmanager
+data:
+  alertmanager.yml: |
+    global:
+      # Default SMTP configuration
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'alerts@wearforce-clean.com'
+      smtp_auth_username: 'alerts@wearforce-clean.com'
+      smtp_auth_password: 'smtp_app_password'
+      smtp_require_tls: true
+      
+      # Slack webhook URL for general alerts
+      slack_api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+      
+      # PagerDuty integration key
+      pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+      
+      # Resolve timeout for alerts
+      resolve_timeout: 5m
+      
+    templates:
+      - '/etc/alertmanager/templates/*.tmpl'
+      
+    # Route tree for alert routing
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'default'
+      routes:
+      
+      # Critical alerts go to PagerDuty and Slack
+      - match:
+          severity: critical
+        receiver: 'critical-alerts'
+        group_wait: 10s
+        group_interval: 1m
+        repeat_interval: 1h
+        
+      # Security alerts go to security team
+      - match:
+          service: security
+        receiver: 'security-team'
+        group_wait: 10s
+        group_interval: 2m
+        repeat_interval: 30m
+        
+      # Database alerts go to DBA team
+      - match:
+          service: database
+        receiver: 'database-team'
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 2h
+        
+      # Business metric alerts go to business team
+      - match:
+          service: business
+        receiver: 'business-team'
+        group_wait: 5m
+        group_interval: 30m
+        repeat_interval: 24h
+        
+      # SLO breach alerts
+      - match:
+          service: slo
+        receiver: 'slo-alerts'
+        group_wait: 1m
+        group_interval: 5m
+        repeat_interval: 30m
+        
+      # Infrastructure alerts
+      - match:
+          service: infrastructure
+        receiver: 'infrastructure-team'
+        
+    # Inhibition rules to prevent alert spam
+    inhibit_rules:
+    # If a node is down, don't alert on services on that node
+    - source_match:
+        alertname: NodeDown
+      target_match_re:
+        instance: '.*'
+      equal: ['instance']
+      
+    # If a service is down, don't alert on high error rates for that service
+    - source_match:
+        alertname: ServiceDown
+      target_match:
+        alertname: HighErrorRate
+      equal: ['job']
+      
+    # If there's a critical response time issue, don't alert on warning level
+    - source_match:
+        alertname: CriticalResponseTime
+      target_match:
+        alertname: HighResponseTime
+      equal: ['job']
+      
+    # Alert receivers configuration
+    receivers:
+    - name: 'default'
+      email_configs:
+      - to: 'devops@wearforce-clean.com'
+        subject: '[WearForce] {{ .Status | toUpper }} Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Labels: {{ range .Labels.SortedPairs }}{{ .Name }}={{ .Value }} {{ end }}
+          {{ end }}
+        html: |
+          <!DOCTYPE html>
+          <html>
+          <body>
+            <h2>WearForce Alert</h2>
+            <p><strong>Status:</strong> {{ .Status | toUpper }}</p>
+            {{ range .Alerts }}
+            <div style="border: 1px solid #ddd; margin: 10px; padding: 10px;">
+              <h3>{{ .Annotations.summary }}</h3>
+              <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+              <p><strong>Labels:</strong></p>
+              <ul>
+                {{ range .Labels.SortedPairs }}
+                <li>{{ .Name }}: {{ .Value }}</li>
+                {{ end }}
+              </ul>
+              <p><strong>Started:</strong> {{ .StartsAt }}</p>
+              {{ if .EndsAt }}
+              <p><strong>Ended:</strong> {{ .EndsAt }}</p>
+              {{ end }}
+            </div>
+            {{ end }}
+          </body>
+          </html>
+          
+    - name: 'critical-alerts'
+      pagerduty_configs:
+      - routing_key: 'YOUR_PAGERDUTY_INTEGRATION_KEY'
+        description: '{{ .GroupLabels.alertname }}: {{ .Annotations.summary }}'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+          description: '{{ .CommonAnnotations.description }}'
+        client: 'WearForce Alertmanager'
+        client_url: 'https://grafana.wearforce-clean.com'
+      slack_configs:
+      - api_url: 'https://hooks.slack.com/services/YOUR/CRITICAL/WEBHOOK'
+        channel: '#critical-alerts'
+        title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Service:* {{ .Labels.service }}
+          {{ end }}
+        color: 'danger'
+        send_resolved: true
+        
+    - name: 'security-team'
+      email_configs:
+      - to: 'security@wearforce-clean.com'
+        subject: '[SECURITY] {{ .Status | toUpper }}: {{ .GroupLabels.alertname }}'
+        body: |
+          SECURITY ALERT DETECTED
+          
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Severity: {{ .Labels.severity }}
+          Service: {{ .Labels.service }}
+          Time: {{ .StartsAt }}
+          {{ end }}
+          
+          Please investigate immediately.
+      slack_configs:
+      - api_url: 'https://hooks.slack.com/services/YOUR/SECURITY/WEBHOOK'
+        channel: '#security-alerts'
+        title: '🛡️ SECURITY ALERT: {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          {{ end }}
+        color: 'warning'
+        
+    - name: 'database-team'
+      email_configs:
+      - to: 'dba@wearforce-clean.com'
+        subject: '[DATABASE] {{ .Status | toUpper }}: {{ .GroupLabels.alertname }}'
+        body: |
+          Database Alert
+          
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Instance: {{ .Labels.instance }}
+          {{ end }}
+      slack_configs:
+      - channel: '#database-alerts'
+        title: '🗄️ DATABASE: {{ .GroupLabels.alertname }}'
+        
+    - name: 'business-team'
+      email_configs:
+      - to: 'business@wearforce-clean.com'
+        subject: '[BUSINESS] {{ .Status | toUpper }}: {{ .GroupLabels.alertname }}'
+        body: |
+          Business Metric Alert
+          
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Impact: This may affect business operations
+          {{ end }}
+      slack_configs:
+      - channel: '#business-alerts'
+        title: '📊 BUSINESS: {{ .GroupLabels.alertname }}'
+        color: 'warning'
+        
+    - name: 'slo-alerts'
+      email_configs:
+      - to: 'sre@wearforce-clean.com'
+        subject: '[SLO BREACH] {{ .Status | toUpper }}: {{ .GroupLabels.alertname }}'
+        body: |
+          SLO BREACH DETECTED
+          
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          SLO: {{ .Labels.slo }}
+          
+          This requires immediate attention to maintain service quality.
+          {{ end }}
+      slack_configs:
+      - channel: '#slo-alerts'
+        title: '⚠️ SLO BREACH: {{ .GroupLabels.alertname }}'
+        color: 'danger'
+        
+    - name: 'infrastructure-team'
+      email_configs:
+      - to: 'infrastructure@wearforce-clean.com'
+        subject: '[INFRA] {{ .Status | toUpper }}: {{ .GroupLabels.alertname }}'
+      slack_configs:
+      - channel: '#infrastructure-alerts'
+        title: '🏗️ INFRA: {{ .GroupLabels.alertname }}'
+        
+  # Custom notification templates
+  wearforce-clean-templates.tmpl: |
+    {{ define "__subject" }}[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }} {{ if gt (len .CommonLabels) (len .GroupLabels) }}({{ with .CommonLabels.Remove .GroupLabels.Names }}{{ .Values | join " " }}{{ end }}){{ end }}{{ end }}
+    
+    {{ define "__description" }}{{ end }}
+    
+    {{ define "__text_alert_list" }}{{ range . }}Labels:
+    {{ range .Labels.SortedPairs }} - {{ .Name }} = {{ .Value }}
+    {{ end }}Annotations:
+    {{ range .Annotations.SortedPairs }} - {{ .Name }} = {{ .Value }}
+    {{ end }}Source: {{ .GeneratorURL }}
+    {{ end }}{{ end }}
+    
+    {{ define "slack.wearforce-clean.title" }}{{ range .Alerts.Firing }}{{ .Annotations.summary }}{{ end }}{{ range .Alerts.Resolved }}{{ .Annotations.summary }}{{ end }}{{ end }}
+    
+    {{ define "slack.wearforce-clean.text" }}
+    {{ if gt (len .Alerts.Firing) 0 }}
+    *Firing:*
+    {{ range .Alerts.Firing }}• {{ .Annotations.description }}{{ end }}
+    {{ end }}
+    {{ if gt (len .Alerts.Resolved) 0 }}
+    *Resolved:*
+    {{ range .Alerts.Resolved }}• {{ .Annotations.description }}{{ end }}
+    {{ end }}
+    {{ end }}
+    
+    {{ define "email.wearforce-clean.subject" }}{{ template "__subject" . }}{{ end }}
+    {{ define "email.wearforce-clean.html" }}
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        body { font-family: Arial, sans-serif; }
+        .alert { border-left: 4px solid; padding: 10px; margin: 10px 0; }
+        .firing { border-color: #d32f2f; background-color: #ffebee; }
+        .resolved { border-color: #388e3c; background-color: #e8f5e8; }
+        .label { display: inline-block; background-color: #e0e0e0; padding: 2px 6px; margin: 2px; border-radius: 3px; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <h2>WearForce Platform Alert</h2>
+      
+      {{ if gt (len .Alerts.Firing) 0 }}
+      <h3 style="color: #d32f2f;">🔥 Firing Alerts ({{ len .Alerts.Firing }})</h3>
+      {{ range .Alerts.Firing }}
+      <div class="alert firing">
+        <h4>{{ .Annotations.summary }}</h4>
+        <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+        <p><strong>Labels:</strong>
+          {{ range .Labels.SortedPairs }}
+          <span class="label">{{ .Name }}={{ .Value }}</span>
+          {{ end }}
+        </p>
+        <p><strong>Started:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+      </div>
+      {{ end }}
+      {{ end }}
+      
+      {{ if gt (len .Alerts.Resolved) 0 }}
+      <h3 style="color: #388e3c;">✅ Resolved Alerts ({{ len .Alerts.Resolved }})</h3>
+      {{ range .Alerts.Resolved }}
+      <div class="alert resolved">
+        <h4>{{ .Annotations.summary }}</h4>
+        <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+        <p><strong>Duration:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05" }} - {{ .EndsAt.Format "15:04:05 UTC" }}</p>
+      </div>
+      {{ end }}
+      {{ end }}
+      
+      <hr>
+      <p><small>
+        This alert was generated by WearForce Monitoring System.<br>
+        View in Grafana: <a href="https://grafana.wearforce-clean.com">https://grafana.wearforce-clean.com</a><br>
+        View in Alertmanager: <a href="https://alertmanager.wearforce-clean.com">https://alertmanager.wearforce-clean.com</a>
+      </small></p>
+    </body>
+    </html>
+    {{ end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      securityContext:
+        fsGroup: 2000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: alertmanager
+        image: prom/alertmanager:v0.26.0
+        args:
+          - '--config.file=/etc/alertmanager/alertmanager.yml'
+          - '--storage.path=/alertmanager'
+          - '--web.external-url=https://alertmanager.wearforce-clean.com'
+          - '--web.route-prefix=/'
+          - '--cluster.listen-address=0.0.0.0:9094'
+          - '--cluster.peer=alertmanager-0.alertmanager:9094'
+          - '--cluster.peer=alertmanager-1.alertmanager:9094'
+          - '--cluster.peer=alertmanager-2.alertmanager:9094'
+          - '--log.level=info'
+        ports:
+        - containerPort: 9093
+          name: web
+        - containerPort: 9094
+          name: mesh
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9093
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9093
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/alertmanager
+        - name: alertmanager-storage
+          mountPath: /alertmanager
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: alertmanager-config
+      - name: alertmanager-storage
+        persistentVolumeClaim:
+          claimName: alertmanager-storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  type: ClusterIP
+  ports:
+  - name: web
+    port: 9093
+    targetPort: 9093
+  - name: mesh
+    port: 9094
+    targetPort: 9094
+  selector:
+    app: alertmanager
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alertmanager-storage
+  namespace: monitoring
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: gp2

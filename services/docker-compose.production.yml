@@ -1,0 +1,733 @@
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: wearforce-clean_clean_postgres
+    environment:
+      POSTGRES_DB: wearforce-clean
+      POSTGRES_USER: wearforce-clean
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wearforce-clean_clean_password}
+      POSTGRES_MULTIPLE_DATABASES: wearforce-clean_clean_crm,wearforce-clean_clean_erp,wearforce-clean_clean_notification,grafana
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/create-multiple-databases.sh:/docker-entrypoint-initdb.d/create-multiple-databases.sh
+      - ./configs/postgres/postgresql.conf:/etc/postgresql/postgresql.conf
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wearforce-clean"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wearforce-clean_clean_network
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=9187"
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: wearforce-clean_clean_postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean_clean?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Cache and Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: wearforce-clean_clean_redis
+    command: |
+      redis-server 
+      --appendonly yes 
+      --requirepass ${REDIS_PASSWORD:-redis_password}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./configs/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-redis_password}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: wearforce-clean_clean_redis_exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_password}
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # NATS JetStream for event streaming
+  nats:
+    image: nats:2.10-alpine
+    container_name: wearforce-clean_clean_nats
+    command: |
+      nats-server 
+      --js 
+      --http_port 8222 
+      --config /etc/nats/nats-server.conf
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats_data:/data
+      - ./configs/nats/nats-server.conf:/etc/nats/nats-server.conf
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Security Services
+  
+  # OPA (Open Policy Agent)
+  opa:
+    image: openpolicyagent/opa:latest-envoy
+    container_name: wearforce-clean_clean_opa
+    command: |
+      run --server 
+      --config-file=/config/opa-config.yaml 
+      --addr=0.0.0.0:8181 
+      --diagnostic-addr=0.0.0.0:8282
+    ports:
+      - "8181:8181"
+      - "8282:8282"
+    volumes:
+      - ./gateway/deployments/opa/policies:/policies
+      - ./gateway/config/opa-config.yaml:/config/opa-config.yaml
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # API Gateway with Envoy Proxy
+  api-gateway:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: wearforce-clean_clean_gateway
+    command: /usr/local/bin/envoy -c /etc/envoy/envoy.yaml --service-cluster wearforce-clean-gateway
+    ports:
+      - "80:8080"
+      - "443:8443"
+      - "9901:9901"  # Admin interface
+    volumes:
+      - ./gateway/config/envoy.yaml:/etc/envoy/envoy.yaml
+      - ./gateway/config/certs:/etc/ssl/certs
+    depends_on:
+      opa:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9901/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Monitoring Services
+  
+  # Prometheus
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: wearforce-clean_clean_prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=10GB'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.external-url=http://localhost:9090'
+      - '--log.level=info'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./configs/prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: wearforce-clean_clean_grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin_password}
+      GF_DATABASE_TYPE: postgres
+      GF_DATABASE_HOST: postgres:5432
+      GF_DATABASE_NAME: grafana
+      GF_DATABASE_USER: wearforce-clean
+      GF_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-wearforce-clean_clean_password}
+      GF_SESSION_PROVIDER: redis
+      GF_SESSION_PROVIDER_CONFIG: addr=redis:6379,pool_size=100,prefix=grafana:session:,password=${REDIS_PASSWORD:-redis_password}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./configs/grafana/grafana.ini:/etc/grafana/grafana.ini
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning
+      - ./configs/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # AlertManager
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: wearforce-clean_clean_alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./configs/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - ./configs/alertmanager/templates:/etc/alertmanager/templates
+      - alertmanager_data:/alertmanager
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Distributed Tracing
+  
+  # Jaeger All-in-One
+  jaeger:
+    image: jaegertracing/all-in-one:1.50
+    container_name: wearforce-clean_clean_jaeger
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: :9411
+      COLLECTOR_OTLP_ENABLED: true
+      METRICS_STORAGE_TYPE: prometheus
+      PROMETHEUS_SERVER_URL: http://prometheus:9090
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger collector HTTP
+      - "14250:14250"  # Jaeger collector gRPC
+      - "9411:9411"    # Zipkin compatible endpoint
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    depends_on:
+      - prometheus
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:16686/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.88.0
+    container_name: wearforce-clean_clean_otel_collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    ports:
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+      - "8888:8888"    # Prometheus metrics
+      - "13133:13133"  # Health check
+    volumes:
+      - ./configs/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    depends_on:
+      - jaeger
+      - prometheus
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:13133/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Logging
+  
+  # Loki for log aggregation
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: wearforce-clean_clean_loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./configs/loki/loki-config.yaml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    networks:
+      - wearforce-clean_clean_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Promtail for log shipping
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: wearforce-clean_clean_promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./configs/promtail/promtail-config.yaml:/etc/promtail/config.yml
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Security Scanning
+  
+  # Vulnerability Scanner
+  trivy:
+    image: aquasec/trivy:latest
+    container_name: wearforce-clean_clean_trivy
+    command: ["server", "--listen", "0.0.0.0:8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - trivy_data:/root/.cache
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Application Services
+  
+  graphql-gateway:
+    build:
+      context: .
+      dockerfile: graphql/Dockerfile
+    container_name: wearforce-clean_clean_graphql
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=graphql-gateway
+      - SERVICE_VERSION=1.0.0
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - CRM_SERVICE_URL=http://crm-service:8001
+      - ERP_SERVICE_URL=http://erp-service:8002
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8003
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-super-secret-jwt-key-change-in-production}
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - JAEGER_AGENT_HOST=jaeger
+      - JAEGER_AGENT_PORT=14268
+      - OTLP_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - ENABLE_BUSINESS_METRICS=true
+      - ENABLE_SECURITY_HEADERS=true
+      - CORS_ORIGINS=https://app.wearforce-clean.com,https://admin.wearforce-clean.com
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      crm-service:
+        condition: service_healthy
+      erp-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=8000"
+      - "prometheus.io/path=/metrics"
+    restart: unless-stopped
+
+  crm-service:
+    build:
+      context: .
+      dockerfile: crm/Dockerfile
+    container_name: wearforce-clean_clean_crm
+    ports:
+      - "8001:8001"
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=crm-service
+      - SERVICE_VERSION=1.0.0
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean_clean_crm
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-super-secret-jwt-key-change-in-production}
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - JAEGER_AGENT_HOST=jaeger
+      - JAEGER_AGENT_PORT=14268
+      - OTLP_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=8001"
+      - "prometheus.io/path=/metrics"
+    restart: unless-stopped
+
+  erp-service:
+    build:
+      context: .
+      dockerfile: erp/Dockerfile
+    container_name: wearforce-clean_clean_erp
+    ports:
+      - "8002:8002"
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=erp-service
+      - SERVICE_VERSION=1.0.0
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean_clean_erp
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/2
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-super-secret-jwt-key-change-in-production}
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - JAEGER_AGENT_HOST=jaeger
+      - JAEGER_AGENT_PORT=14268
+      - OTLP_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=8002"
+      - "prometheus.io/path=/metrics"
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification/Dockerfile
+    container_name: wearforce-clean_clean_notification
+    ports:
+      - "8003:8003"
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=notification-service
+      - SERVICE_VERSION=1.0.0
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean_clean_notification
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/3
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-super-secret-jwt-key-change-in-production}
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - JAEGER_AGENT_HOST=jaeger
+      - JAEGER_AGENT_PORT=14268
+      - OTLP_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      # Email configuration
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USE_TLS=true
+      - SMTP_USERNAME=${SMTP_USERNAME:-your-email@gmail.com}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-your-app-password}
+      # SMS configuration (Twilio)
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-your-twilio-sid}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-your-twilio-token}
+      - TWILIO_FROM_PHONE=${TWILIO_FROM_PHONE:-+1234567890}
+      # Push notification configuration (Firebase)
+      - FIREBASE_CREDENTIALS_PATH=/app/firebase-credentials.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=8003"
+      - "prometheus.io/path=/metrics"
+    restart: unless-stopped
+
+  # Background Task Workers with enhanced monitoring
+  crm-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wearforce-clean_clean_crm_worker
+    command: ["python", "-m", "rq", "worker", "crm_tasks", "--url", "redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1"]
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=crm-worker
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean_clean_crm
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  erp-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wearforce-clean_clean_erp_worker
+    command: ["python", "-m", "rq", "worker", "erp_tasks", "--url", "redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/2"]
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=erp-worker
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean_clean_erp
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/2
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  notification-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wearforce-clean_clean_notification_worker
+    command: ["python", "-m", "rq", "worker", "notification_tasks", "--url", "redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/3"]
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=notification-worker
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean_clean_notification
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/3
+      - NATS_URL=nats://nats:4222
+      # Same notification environment variables as the service
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USE_TLS=true
+      - SMTP_USERNAME=${SMTP_USERNAME:-your-email@gmail.com}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-your-app-password}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-your-twilio-sid}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-your-twilio-token}
+      - TWILIO_FROM_PHONE=${TWILIO_FROM_PHONE:-+1234567890}
+      - FIREBASE_CREDENTIALS_PATH=/app/firebase-credentials.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Health Monitoring Service
+  health-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.health-monitor
+    container_name: wearforce-clean_clean_health_monitor
+    ports:
+      - "8090:8080"
+    environment:
+      - ENVIRONMENT=production
+      - SERVICE_NAME=health-monitor
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:${POSTGRES_PASSWORD:-wearforce-clean_clean_password}@postgres:5432/wearforce-clean
+      - CHECK_INTERVAL=30
+      - EXTERNAL_APIS=["stripe", "sendgrid", "twilio"]
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - PAGERDUTY_WEBHOOK_URL=${PAGERDUTY_WEBHOOK_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    labels:
+      - "prometheus.io/scrape=true"
+      - "prometheus.io/port=8080"
+      - "prometheus.io/path=/metrics"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Node Exporter for system metrics
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: wearforce-clean_clean_node_exporter
+    command:
+      - '--path.rootfs=/host'
+    ports:
+      - "9100:9100"
+    volumes:
+      - '/:/host:ro,rslave'
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Blackbox Exporter for endpoint monitoring
+  blackbox-exporter:
+    image: prom/blackbox-exporter:latest
+    container_name: wearforce-clean_clean_blackbox_exporter
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./configs/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Administrative Tools (for production monitoring)
+  
+  # RQ Dashboard for monitoring background tasks
+  rq-dashboard:
+    image: eoranged/rq-dashboard
+    container_name: wearforce-clean_clean_rq_dashboard
+    ports:
+      - "9181:9181"
+    environment:
+      - RQ_DASHBOARD_REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379
+      - RQ_DASHBOARD_USERNAME=${RQ_DASHBOARD_USERNAME:-admin}
+      - RQ_DASHBOARD_PASSWORD=${RQ_DASHBOARD_PASSWORD:-admin_password}
+    depends_on:
+      - redis
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  nats_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  alertmanager_data:
+    driver: local
+  loki_data:
+    driver: local
+  trivy_data:
+    driver: local
+
+networks:
+  wearforce-clean_clean_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+    labels:
+      - "com.wearforce-clean.network=production"

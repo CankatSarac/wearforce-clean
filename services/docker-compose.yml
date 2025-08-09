@@ -1,0 +1,340 @@
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: wearforce-clean_clean_postgres
+    environment:
+      POSTGRES_DB: wearforce-clean_clean
+      POSTGRES_USER: wearforce-clean_clean
+      POSTGRES_PASSWORD: wearforce-clean_clean_password
+      POSTGRES_MULTIPLE_DATABASES: wearforce-clean_clean_crm,wearforce-clean_clean_erp,wearforce-clean_clean_notification
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/create-multiple-databases.sh:/docker-entrypoint-initdb.d/create-multiple-databases.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wearforce-clean_clean"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wearforce-clean_clean_network
+
+  # Cache and Message Broker
+  redis:
+    image: redis:7-alpine
+    container_name: wearforce-clean_clean_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+
+  # NATS JetStream for event streaming
+  nats:
+    image: nats:2.10-alpine
+    container_name: wearforce-clean_clean_nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"  # NATS port
+      - "8222:8222"  # HTTP monitoring port
+    volumes:
+      - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+
+  # Application Services
+  graphql-gateway:
+    build:
+      context: .
+      dockerfile: graphql/Dockerfile
+    container_name: wearforce-clean_clean_graphql
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean
+      - REDIS_URL=redis://redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - CRM_SERVICE_URL=http://crm-service:8001
+      - ERP_SERVICE_URL=http://erp-service:8002
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8003
+      - JWT_SECRET_KEY=your-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      crm-service:
+        condition: service_healthy
+      erp-service:
+        condition: service_healthy
+      notification-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  crm-service:
+    build:
+      context: .
+      dockerfile: crm/Dockerfile
+    container_name: wearforce-clean_clean_crm
+    ports:
+      - "8001:8001"
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_crm
+      - REDIS_URL=redis://redis:6379/1
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=your-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  erp-service:
+    build:
+      context: .
+      dockerfile: erp/Dockerfile
+    container_name: wearforce-clean_clean_erp
+    ports:
+      - "8002:8002"
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_erp
+      - REDIS_URL=redis://redis:6379/2
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=your-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification/Dockerfile
+    container_name: wearforce-clean_clean_notification
+    ports:
+      - "8003:8003"
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_notification
+      - REDIS_URL=redis://redis:6379/3
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=your-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      # Email configuration
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USE_TLS=true
+      - SMTP_USERNAME=your-email@gmail.com
+      - SMTP_PASSWORD=your-app-password
+      # SMS configuration (Twilio)
+      - TWILIO_ACCOUNT_SID=your-twilio-sid
+      - TWILIO_AUTH_TOKEN=your-twilio-token
+      - TWILIO_FROM_PHONE=+1234567890
+      # Push notification configuration (Firebase)
+      - FIREBASE_CREDENTIALS_PATH=/app/firebase-credentials.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Background Task Workers
+  crm-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wearforce-clean_clean_crm_worker
+    command: ["python", "-m", "rq", "worker", "crm_tasks", "--url", "redis://redis:6379/1"]
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_crm
+      - REDIS_URL=redis://redis:6379/1
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  erp-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wearforce-clean_clean_erp_worker
+    command: ["python", "-m", "rq", "worker", "erp_tasks", "--url", "redis://redis:6379/2"]
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_erp
+      - REDIS_URL=redis://redis:6379/2
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  notification-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wearforce-clean_clean_notification_worker
+    command: ["python", "-m", "rq", "worker", "notification_tasks", "--url", "redis://redis:6379/3"]
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_notification
+      - REDIS_URL=redis://redis:6379/3
+      - NATS_URL=nats://nats:4222
+      # Same notification environment variables as the service
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USE_TLS=true
+      - SMTP_USERNAME=your-email@gmail.com
+      - SMTP_PASSWORD=your-app-password
+      - TWILIO_ACCOUNT_SID=your-twilio-sid
+      - TWILIO_AUTH_TOKEN=your-twilio-token
+      - TWILIO_FROM_PHONE=+1234567890
+      - FIREBASE_CREDENTIALS_PATH=/app/firebase-credentials.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # Monitoring and Management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: wearforce-clean_clean_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@wearforce-clean.com
+      PGADMIN_DEFAULT_PASSWORD: admin_password
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: wearforce-clean_clean_redis_commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+  # RQ Dashboard for monitoring background tasks
+  rq-dashboard:
+    image: eoranged/rq-dashboard
+    container_name: wearforce-clean_clean_rq_dashboard
+    ports:
+      - "9181:9181"
+    environment:
+      - RQ_DASHBOARD_REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    networks:
+      - wearforce-clean_clean_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  nats_data:
+    driver: local
+
+networks:
+  wearforce-clean_clean_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

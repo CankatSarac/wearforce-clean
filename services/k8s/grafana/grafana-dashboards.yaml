@@ -1,0 +1,402 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-config
+  namespace: monitoring
+  labels:
+    app: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'wearforce-clean-dashboards'
+      orgId: 1
+      folder: 'WearForce'
+      type: file
+      disableDeletion: false
+      updateIntervalSeconds: 30
+      allowUiUpdates: true
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+  labels:
+    app: grafana
+data:
+  wearforce-clean-overview.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "WearForce Platform Overview",
+        "tags": ["wearforce-clean", "overview"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "System Health",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "up{job=~\"wearforce-clean-.*\"}",
+                "legendFormat": "{{job}}",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "mappings": [
+                  {
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "red"
+                      },
+                      "1": {
+                        "text": "UP",
+                        "color": "green"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ],
+                "thresholds": {
+                  "steps": [
+                    {"color": "red", "value": 0},
+                    {"color": "green", "value": 1}
+                  ]
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Request Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(http_requests_total[5m])) by (service)",
+                "legendFormat": "{{service}}",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Requests/sec",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Response Time (95th Percentile)",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+                "legendFormat": "{{service}}",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Seconds",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+          },
+          {
+            "id": 4,
+            "title": "Error Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(http_errors_total[5m])) by (service)",
+                "legendFormat": "{{service}}",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Errors/sec",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s",
+        "schemaVersion": 30,
+        "version": 1
+      }
+    }
+    
+  wearforce-clean-infrastructure.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "WearForce Infrastructure",
+        "tags": ["wearforce-clean", "infrastructure"],
+        "panels": [
+          {
+            "id": 1,
+            "title": "CPU Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "100 - (avg by(instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+                "legendFormat": "{{instance}}",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Percentage",
+                "min": 0,
+                "max": 100
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Memory Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+                "legendFormat": "{{instance}}",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Percentage",
+                "min": 0,
+                "max": 100
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Disk Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "(1 - (node_filesystem_avail_bytes{fstype!=\"tmpfs\"} / node_filesystem_size_bytes{fstype!=\"tmpfs\"})) * 100",
+                "legendFormat": "{{instance}} - {{mountpoint}}",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Percentage",
+                "min": 0,
+                "max": 100
+              }
+            ],
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          }
+        ]
+      }
+    }
+    
+  wearforce-clean-business.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "WearForce Business Metrics",
+        "tags": ["wearforce-clean", "business"],
+        "panels": [
+          {
+            "id": 1,
+            "title": "Total Customers",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "wearforce-clean_customers_total",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short"
+              }
+            },
+            "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Total Orders",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "wearforce-clean_orders_total",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short"
+              }
+            },
+            "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Total Revenue",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "wearforce-clean_revenue_total",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "currencyUSD"
+              }
+            },
+            "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0}
+          },
+          {
+            "id": 4,
+            "title": "Order Completion Rate",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "wearforce-clean_orders_completed_total / wearforce-clean_orders_total",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percentunit",
+                "min": 0,
+                "max": 1
+              }
+            },
+            "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0}
+          },
+          {
+            "id": 5,
+            "title": "Customer Growth",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "increase(wearforce-clean_customers_total[1d])",
+                "legendFormat": "Daily Growth",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "New Customers",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4}
+          },
+          {
+            "id": 6,
+            "title": "Revenue Trend",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "increase(wearforce-clean_revenue_total[1d])",
+                "legendFormat": "Daily Revenue",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Revenue ($)",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4}
+          }
+        ]
+      }
+    }
+    
+  wearforce-clean-security.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "WearForce Security Monitoring",
+        "tags": ["wearforce-clean", "security"],
+        "panels": [
+          {
+            "id": 1,
+            "title": "Authentication Failures",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(auth_failures_total[5m])",
+                "legendFormat": "Failures/sec",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Failures/sec",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Suspicious Requests",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(suspicious_requests_total[5m])",
+                "legendFormat": "Suspicious/sec",
+                "refId": "A"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Requests/sec",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "SSL Certificate Expiry",
+            "type": "table",
+            "targets": [
+              {
+                "expr": "(probe_ssl_earliest_cert_expiry - time()) / 86400",
+                "format": "table",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "days",
+                "custom": {
+                  "displayMode": "basic"
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          }
+        ]
+      }
+    }

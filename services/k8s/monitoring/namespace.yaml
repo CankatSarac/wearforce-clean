@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+    app.kubernetes.io/name: monitoring
+    app.kubernetes.io/part-of: wearforce-clean-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wearforce-clean-system
+  labels:
+    name: wearforce-clean-system
+    app.kubernetes.io/name: wearforce-clean-system
+    app.kubernetes.io/part-of: wearforce-clean-platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wearforce-clean-app
+  labels:
+    name: wearforce-clean-app
+    app.kubernetes.io/name: wearforce-clean-app
+    app.kubernetes.io/part-of: wearforce-clean-platform

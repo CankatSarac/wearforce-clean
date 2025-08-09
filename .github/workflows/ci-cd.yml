@@ -1,0 +1,486 @@
+name: WearForce Comprehensive CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'release/**', 'hotfix/**']
+    tags: ['v*']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      force_deploy:
+        description: 'Force deployment even if tests fail'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: wearforce
+  HELM_VERSION: 'v3.14.0'
+  KUBECTL_VERSION: 'v1.29.0'
+  TERRAFORM_VERSION: '1.7.0'
+
+jobs:
+  # Code Quality and Testing
+  code-quality:
+    name: Code Quality & Testing
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [gateway, services, ai-services]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Go (for gateway)
+      if: matrix.service == 'gateway'
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+        cache-dependency-path: gateway/go.sum
+
+    - name: Setup Python (for services)
+      if: matrix.service != 'gateway'
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install Poetry (for Python services)
+      if: matrix.service != 'gateway'
+      uses: snok/install-poetry@v1
+      with:
+        version: '1.8.0'
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+
+    # Gateway specific steps
+    - name: Cache Go modules
+      if: matrix.service == 'gateway'
+      uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('gateway/go.sum') }}
+        restore-keys: ${{ runner.os }}-go-
+
+    - name: Download Go dependencies
+      if: matrix.service == 'gateway'
+      working-directory: ./gateway
+      run: go mod download
+
+    - name: Run Go tests
+      if: matrix.service == 'gateway'
+      working-directory: ./gateway
+      run: |
+        go test -v -race -coverprofile=coverage.out ./...
+        go tool cover -html=coverage.out -o coverage.html
+
+    - name: Run Go linting
+      if: matrix.service == 'gateway'
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: v1.56.0
+        working-directory: ./gateway
+        args: --timeout=5m
+
+    # Python services specific steps
+    - name: Cache Poetry dependencies
+      if: matrix.service != 'gateway'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ matrix.service }}/.venv
+          ~/.cache/pypoetry
+        key: ${{ runner.os }}-poetry-${{ hashFiles(format('{0}/pyproject.toml', matrix.service)) }}
+        restore-keys: ${{ runner.os }}-poetry-
+
+    - name: Install Python dependencies
+      if: matrix.service != 'gateway'
+      working-directory: ./${{ matrix.service }}
+      run: poetry install --with dev
+
+    - name: Run Python linting (Black, isort, flake8)
+      if: matrix.service != 'gateway'
+      working-directory: ./${{ matrix.service }}
+      run: |
+        poetry run black --check .
+        poetry run isort --check-only .
+        poetry run flake8 .
+
+    - name: Run Python type checking
+      if: matrix.service != 'gateway'
+      working-directory: ./${{ matrix.service }}
+      run: poetry run mypy .
+
+    - name: Run Python tests
+      if: matrix.service != 'gateway'
+      working-directory: ./${{ matrix.service }}
+      run: |
+        poetry run pytest --cov --cov-report=xml --cov-report=html -v --junitxml=pytest-results.xml
+        
+    - name: Publish test results
+      if: matrix.service != 'gateway' && always()
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      with:
+        files: |
+          ${{ matrix.service }}/pytest-results.xml
+        check_name: "${{ matrix.service }} Test Results"
+        comment_mode: create new
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v4
+      with:
+        directory: ./${{ matrix.service }}
+        flags: ${{ matrix.service }}
+        name: ${{ matrix.service }}-coverage
+        token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Client Applications Testing
+  client-testing:
+    name: Client Testing
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        client: [web, mobile]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: clients/${{ matrix.client }}/package-lock.json
+
+    - name: Install dependencies
+      working-directory: ./clients/${{ matrix.client }}
+      run: npm ci
+
+    - name: Run linting
+      working-directory: ./clients/${{ matrix.client }}
+      run: npm run lint
+
+    - name: Run type checking
+      working-directory: ./clients/${{ matrix.client }}
+      run: npm run type-check
+
+    - name: Run tests
+      working-directory: ./clients/${{ matrix.client }}
+      run: npm run test:coverage
+
+    - name: Build application
+      working-directory: ./clients/${{ matrix.client }}
+      run: npm run build
+
+  # Comprehensive Security Scanning
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    needs: [code-quality]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Run Trivy vulnerability scanner (filesystem)
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-fs-results.sarif'
+        severity: 'CRITICAL,HIGH,MEDIUM'
+
+    - name: Run Trivy vulnerability scanner (config)
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-config-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-fs-results.sarif'
+        
+    - name: Upload Trivy config scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-config-results.sarif'
+
+    - name: Run Semgrep security scan
+      uses: semgrep/semgrep-action@v1
+      with:
+        publishToken: ${{ secrets.SEMGREP_APP_TOKEN }}
+        generateSarif: "1"
+
+    - name: Upload Semgrep results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: semgrep.sarif
+        
+    - name: Run dependency vulnerability scan
+      uses: actions/dependency-review-action@v4
+      if: github.event_name == 'pull_request'
+      
+    - name: OWASP Dependency Check
+      uses: dependency-check/Dependency-Check_Action@main
+      with:
+        project: 'WearForce'
+        path: '.'
+        format: 'SARIF'
+        
+    - name: Upload OWASP results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: reports/dependency-check-report.sarif
+
+  # Build and Push Docker Images
+  build-images:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: [code-quality, client-testing, security-scan]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v'))
+    
+    strategy:
+      matrix:
+        include:
+          - service: gateway
+            context: ./gateway
+            dockerfile: ./gateway/Dockerfile
+          - service: crm-service
+            context: ./services
+            dockerfile: ./services/crm/Dockerfile
+          - service: erp-service
+            context: ./services
+            dockerfile: ./services/erp/Dockerfile
+          - service: graphql-service
+            context: ./services
+            dockerfile: ./services/graphql/Dockerfile
+          - service: notification-service
+            context: ./services
+            dockerfile: ./services/notification/Dockerfile
+          - service: llm-service
+            context: ./gateway/ai-services
+            dockerfile: ./gateway/ai-services/llm-service/Dockerfile
+          - service: nlu-service
+            context: ./gateway/ai-services
+            dockerfile: ./gateway/ai-services/nlu-service/Dockerfile
+          - service: rag-service
+            context: ./gateway/ai-services
+            dockerfile: ./gateway/ai-services/rag-service/Dockerfile
+          - service: stt-service
+            context: ./gateway/ai-services
+            dockerfile: ./gateway/ai-services/stt-service/Dockerfile
+          - service: tts-service
+            context: ./gateway/ai-services
+            dockerfile: ./gateway/ai-services/tts-service/Dockerfile
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ matrix.context }}
+        file: ${{ matrix.dockerfile }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+        build-args: |
+          BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          COMMIT_SHA=${{ github.sha }}
+          
+    - name: Run Trivy image scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        format: 'sarif'
+        output: 'trivy-${{ matrix.service }}-image.sarif'
+        
+    - name: Upload image scan results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-${{ matrix.service }}-image.sarif'
+        
+    - name: Sign image with cosign
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      uses: sigstore/cosign-installer@v3
+      
+    - name: Sign the published Docker image
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+      env:
+        COSIGN_EXPERIMENTAL: 1
+      run: |
+        cosign sign --yes ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-images]
+    if: github.ref == 'refs/heads/develop'
+    environment:
+      name: staging
+      url: https://staging.wearforce.io
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.29.0'
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: 'v3.14.0'
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region us-west-2 --name wearforce-staging
+
+    - name: Deploy to staging
+      run: |
+        helm upgrade --install wearforce-staging ./k8s/helm/wearforce \
+          --namespace staging \
+          --create-namespace \
+          --values ./k8s/helm/wearforce/values-staging.yaml \
+          --set global.image.tag=${{ github.sha }} \
+          --wait --timeout=10m
+
+    - name: Run smoke tests
+      run: |
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=wearforce-gateway -n staging --timeout=300s
+        curl -f https://staging.wearforce.io/health || exit 1
+
+  # Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-images]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: production
+      url: https://wearforce.io
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: 'v1.29.0'
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: 'v3.14.0'
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region us-west-2 --name wearforce-production
+
+    - name: Blue-Green Deployment
+      run: |
+        # Deploy to green environment
+        helm upgrade --install wearforce-green ./k8s/helm/wearforce \
+          --namespace production \
+          --create-namespace \
+          --values ./k8s/helm/wearforce/values-production.yaml \
+          --set global.image.tag=${{ github.ref_name }} \
+          --set global.environment=green \
+          --wait --timeout=15m
+
+        # Run health checks on green environment
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=wearforce-gateway,environment=green -n production --timeout=600s
+        
+        # Switch traffic to green (blue-green switch)
+        kubectl patch service wearforce-gateway -n production -p '{"spec":{"selector":{"environment":"green"}}}'
+        
+        # Clean up old blue deployment after successful switch
+        sleep 30
+        helm uninstall wearforce-blue -n production || true
+
+    - name: Run production smoke tests
+      run: |
+        curl -f https://wearforce.io/health || exit 1
+        curl -f https://wearforce.io/metrics || exit 1
+
+  # Cleanup old images
+  cleanup:
+    name: Cleanup old images
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    
+    steps:
+    - name: Delete old container images
+      uses: actions/delete-package-versions@v5
+      with:
+        package-name: 'wearforce-gateway'
+        package-type: 'container'
+        min-versions-to-keep: 10
+        delete-only-untagged-versions: true

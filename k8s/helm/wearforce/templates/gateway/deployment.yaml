@@ -1,0 +1,147 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: wearforce-clean
+spec:
+  {{- if not .Values.gateway.autoscaling.enabled }}
+  replicas: {{ .Values.gateway.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "wearforce-clean.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/gateway/configmap.yaml") . | sha256sum }}
+        {{- with .Values.global.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "wearforce-clean.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+        version: {{ .Values.global.image.tag | default .Chart.AppVersion }}
+        environment: {{ .Values.global.environment }}
+        {{- if .Values.blueGreen.enabled }}
+        environment: {{ .Values.blueGreen.activeColor | default "blue" }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wearforce-clean.serviceAccountName" . }}-gateway
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: gateway
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.global.image.registry }}/{{ .Values.global.image.repository }}/{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag | default .Values.global.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.gateway.service.http.targetPort }}
+          protocol: TCP
+        - name: grpc
+          containerPort: {{ .Values.gateway.service.grpc.targetPort }}
+          protocol: TCP
+        - name: metrics
+          containerPort: {{ .Values.gateway.service.metrics.targetPort }}
+          protocol: TCP
+        {{- if .Values.gateway.healthcheck.enabled }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.gateway.healthcheck.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.gateway.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.gateway.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.gateway.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.gateway.healthcheck.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.gateway.healthcheck.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.gateway.healthcheck.initialDelaySeconds }}
+          periodSeconds: {{ .Values.gateway.healthcheck.periodSeconds }}
+          timeoutSeconds: {{ .Values.gateway.healthcheck.timeoutSeconds }}
+          failureThreshold: {{ .Values.gateway.healthcheck.failureThreshold }}
+        {{- end }}
+        resources:
+          {{- toYaml .Values.gateway.resources | nindent 12 }}
+        env:
+        - name: ENVIRONMENT
+          value: {{ .Values.global.environment }}
+        - name: SERVICE_NAME
+          value: gateway
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        {{- range $key, $value := .Values.gateway.env }}
+        - name: {{ $key }}
+          value: {{ $value | quote }}
+        {{- end }}
+        envFrom:
+        - configMapRef:
+            name: {{ include "wearforce-clean.fullname" . }}-gateway-config
+        - secretRef:
+            name: {{ include "wearforce-clean.fullname" . }}-gateway-secrets
+        volumeMounts:
+        - name: config
+          mountPath: /app/configs
+        - name: logs
+          mountPath: /app/logs
+        - name: certs
+          mountPath: /app/certs
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "wearforce-clean.fullname" . }}-gateway-config
+      - name: logs
+        emptyDir: {}
+      - name: certs
+        secret:
+          secretName: {{ include "wearforce-clean.fullname" . }}-gateway-certs
+          optional: true
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Anti-affinity to ensure pods are spread across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/component
+                  operator: In
+                  values:
+                  - gateway
+              topologyKey: kubernetes.io/hostname
+{{- end }}

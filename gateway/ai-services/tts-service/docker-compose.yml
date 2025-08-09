@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  tts-service:
+    build:
+      context: ..
+      dockerfile: tts-service/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVICE_NAME=tts-service
+      - PORT=8002
+      - HOST=0.0.0.0
+      - TTS_MODEL_PATH=/app/models/piper
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+      - DEBUG=false
+      - PYTHONPATH=/app
+    volumes:
+      - tts_models:/app/models/piper
+      - tts_cache:/app/cache
+      - tts_logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  tts_models:
+  tts_cache:
+  tts_logs:
+  redis_data:
+
+networks:
+  default:
+    name: wearforce-clean-ai-network
+    external: true

@@ -1,0 +1,173 @@
+[tool.poetry]
+name = "wearforce-stt-service"
+version = "1.0.0"
+description = "WearForce Speech-to-Text service with Whisper.cpp integration"
+authors = ["WearForce Team <team@wearforce.ai>"]
+readme = "README.md"
+packages = [{include = "stt_service"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+# Core web framework
+fastapi = {extras = ["all"], version = "^0.104.1"}
+uvicorn = {extras = ["standard"], version = "^0.24.0"}
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+
+# Async and HTTP
+httpx = "^0.25.2"
+aiofiles = "^23.2.0"
+
+# Logging and monitoring  
+structlog = "^23.2.0"
+prometheus-client = "^0.19.0"
+psutil = "^5.9.6"
+
+# Redis and caching
+redis = "^5.0.1"
+
+# gRPC
+grpcio = "^1.59.3"
+grpcio-tools = "^1.59.3"
+grpcio-reflection = "^1.59.3"
+
+# Audio processing
+librosa = "^0.10.1"
+soundfile = "^0.12.1"
+pydub = "^0.25.1"
+scipy = "^1.11.4"
+numpy = "^1.24.3"
+
+# ML dependencies - will be handled by Dockerfile for CPU/GPU variants
+torch = "^2.1.0"
+torchaudio = "^2.1.0"
+faster-whisper = "^0.9.0"
+openai-whisper = "20231117"
+
+# Performance optimizations
+numba = "^0.58.1"
+tenacity = "^8.2.3"
+
+# Database
+alembic = "^1.13.1"
+asyncpg = "^0.29.0"
+
+# Additional utilities
+python-multipart = "^0.0.6"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+bcrypt = "^4.1.2"
+
+[tool.poetry.group.dev.dependencies]
+# Testing
+pytest = "^7.4.3"
+pytest-asyncio = "^0.21.1"
+pytest-cov = "^4.1.0"
+pytest-mock = "^3.12.0"
+
+# Code quality
+black = "^23.11.0"
+isort = "^5.12.0"
+flake8 = "^6.1.0"
+mypy = "^1.7.1"
+
+# Development
+ipython = "^8.17.2"
+jupyter = "^1.0.0"
+
+[tool.poetry.group.gpu.dependencies]
+# GPU-specific dependencies (will be installed in GPU Docker builds)
+torch = {url = "https://download.pytorch.org/whl/cu118/torch-2.1.0%2Bcu118-cp311-cp311-linux_x86_64.whl"}
+torchaudio = {url = "https://download.pytorch.org/whl/cu118/torchaudio-2.1.0%2Bcu118-cp311-cp311-linux_x86_64.whl"}
+
+[tool.poetry.group.cpu.dependencies]
+# CPU-specific dependencies (will be installed in CPU Docker builds)
+torch = {url = "https://download.pytorch.org/whl/cpu/torch-2.1.0%2Bcpu-cp311-cp311-linux_x86_64.whl"}
+torchaudio = {url = "https://download.pytorch.org/whl/cpu/torchaudio-2.1.0%2Bcpu-cp311-cp311-linux_x86_64.whl"}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["stt_service", "shared"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "whisper.*",
+    "faster_whisper.*",
+    "librosa.*",
+    "soundfile.*",
+    "pydub.*",
+    "grpc.*",
+    "whispercpp.*"
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "gpu: marks tests that require GPU",
+    "cpu: marks tests that are CPU-only"
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["stt_service", "shared"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+    "*/migrations/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

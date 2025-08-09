@@ -1,0 +1,382 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+  labels:
+    app: otel-collector
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      # OTLP receiver for traces and metrics
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+            cors:
+              allowed_origins:
+                - "https://app.wearforce-clean.com"
+                - "https://admin.wearforce-clean.com"
+              allowed_headers:
+                - "*"
+              
+      # Jaeger receiver for backward compatibility
+      jaeger:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:14250
+          thrift_http:
+            endpoint: 0.0.0.0:14268
+          thrift_compact:
+            endpoint: 0.0.0.0:6831
+          thrift_binary:
+            endpoint: 0.0.0.0:6832
+            
+      # Zipkin receiver
+      zipkin:
+        endpoint: 0.0.0.0:9411
+        
+      # Prometheus receiver for metrics
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: 'wearforce-clean-services'
+              static_configs:
+                - targets: ['crm-service:8001', 'erp-service:8002', 'notification-service:8003', 'graphql-gateway:8000']
+              scrape_interval: 30s
+              metrics_path: /metrics
+              
+    processors:
+      # Batch processor for performance
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+        
+      # Memory limiter to prevent OOM
+      memory_limiter:
+        limit_mib: 512
+        spike_limit_mib: 128
+        
+      # Resource processor to add/modify resource attributes
+      resource:
+        attributes:
+          - key: service.namespace
+            value: "wearforce-clean"
+            action: upsert
+          - key: service.environment
+            value: "production"
+            action: upsert
+          - key: service.cluster
+            value: "wearforce-clean-k8s"
+            action: upsert
+            
+      # Span processor for trace processing
+      span:
+        name:
+          # Remove sensitive information from span names
+          to_attributes:
+            rules:
+              - pattern: ^(GET|POST|PUT|DELETE) (.+)\?.*$
+                name_pattern: ${1} ${2}
+                
+      # Attributes processor for sensitive data removal
+      attributes:
+        actions:
+          - key: http.request.header.authorization
+            action: delete
+          - key: http.request.header.cookie
+            action: delete
+          - key: http.request.header.x-api-key
+            action: delete
+          - key: db.statement
+            action: update
+            from_attribute: db.statement
+            # Mask SQL statements to remove potential PII
+            
+      # Sampling processor for trace sampling
+      probabilistic_sampler:
+        sampling_percentage: 10.0
+        hash_seed: 22
+        
+    exporters:
+      # Jaeger exporter
+      jaeger:
+        endpoint: jaeger-collector:14250
+        tls:
+          insecure: true
+          
+      # Prometheus exporter for metrics
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        const_labels:
+          cluster: wearforce-clean-production
+          
+      # OTLP exporter for external systems
+      otlp/external:
+        endpoint: "${EXTERNAL_OTLP_ENDPOINT}"
+        headers:
+          api-key: "${EXTERNAL_API_KEY}"
+        tls:
+          insecure: false
+          
+      # Logging exporter for debugging
+      logging:
+        loglevel: info
+        sampling_initial: 2
+        sampling_thereafter: 500
+        
+    extensions:
+      # Health check extension
+      health_check:
+        endpoint: 0.0.0.0:13133
+        
+      # pprof extension for profiling
+      pprof:
+        endpoint: 0.0.0.0:1777
+        
+      # zpages extension for debugging
+      zpages:
+        endpoint: 0.0.0.0:55679
+        
+    service:
+      extensions: [health_check, pprof, zpages]
+      
+      pipelines:
+        # Traces pipeline
+        traces:
+          receivers: [otlp, jaeger, zipkin]
+          processors: [memory_limiter, resource, span, attributes, batch]
+          exporters: [jaeger, logging]
+          
+        # Metrics pipeline
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheus, logging]
+          
+        # Logs pipeline
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [logging]
+          
+      # Telemetry configuration
+      telemetry:
+        logs:
+          level: "info"
+        metrics:
+          address: 0.0.0.0:8888
+          
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8888"
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.88.0
+        command:
+          - "/otelcol-contrib"
+          - "--config=/etc/otel-collector-config.yaml"
+        ports:
+        - containerPort: 4317   # OTLP gRPC receiver
+          name: otlp-grpc
+        - containerPort: 4318   # OTLP HTTP receiver
+          name: otlp-http
+        - containerPort: 14250  # Jaeger gRPC
+          name: jaeger-grpc
+        - containerPort: 14268  # Jaeger HTTP
+          name: jaeger-http
+        - containerPort: 6831   # Jaeger thrift compact
+          name: jaeger-compact
+          protocol: UDP
+        - containerPort: 6832   # Jaeger thrift binary
+          name: jaeger-binary
+          protocol: UDP
+        - containerPort: 9411   # Zipkin
+          name: zipkin
+        - containerPort: 8889   # Prometheus metrics
+          name: prometheus
+        - containerPort: 8888   # Collector metrics
+          name: collector-metrics
+        - containerPort: 13133  # Health check
+          name: health-check
+        - containerPort: 1777   # pprof
+          name: pprof
+        - containerPort: 55679  # zpages
+          name: zpages
+        env:
+        - name: EXTERNAL_OTLP_ENDPOINT
+          value: "https://api.honeycomb.io"
+        - name: EXTERNAL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: otel-external-secrets
+              key: api-key
+              optional: true
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: otel-collector-config-vol
+          mountPath: /etc/otel-collector-config.yaml
+          subPath: otel-collector-config.yaml
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 10001
+      volumes:
+      - name: otel-collector-config-vol
+        configMap:
+          name: otel-collector-config
+      securityContext:
+        fsGroup: 10001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  type: ClusterIP
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+  - name: jaeger-grpc
+    port: 14250
+    targetPort: 14250
+    protocol: TCP
+  - name: jaeger-http
+    port: 14268
+    targetPort: 14268
+    protocol: TCP
+  - name: jaeger-compact
+    port: 6831
+    targetPort: 6831
+    protocol: UDP
+  - name: jaeger-binary
+    port: 6832
+    targetPort: 6832
+    protocol: UDP
+  - name: zipkin
+    port: 9411
+    targetPort: 9411
+    protocol: TCP
+  - name: prometheus
+    port: 8889
+    targetPort: 8889
+    protocol: TCP
+  - name: collector-metrics
+    port: 8888
+    targetPort: 8888
+    protocol: TCP
+  selector:
+    app: otel-collector
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app: otel-collector
+  endpoints:
+  - port: collector-metrics
+    interval: 30s
+    path: /metrics
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: otel-collector
+  namespace: monitoring
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: otel-collector
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60

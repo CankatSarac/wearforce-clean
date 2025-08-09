@@ -1,0 +1,231 @@
+# Staging environment overrides
+global:
+  environment: staging
+  domain: staging.wearforce-clean.io
+  image:
+    tag: develop
+    pullPolicy: Always
+
+# Staging resource allocation
+gateway:
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+
+# AI Services with moderate resources
+aiServices:
+  llm:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 8Gi
+        nvidia.com/gpu: 1
+      requests:
+        cpu: 1000m
+        memory: 4Gi
+        nvidia.com/gpu: 1
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 2
+
+  nlu:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+
+  rag:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 3
+
+  stt:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+  tts:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+
+# Business Services with moderate resources
+businessServices:
+  graphql:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 125m
+        memory: 256Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+
+  crm:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 125m
+        memory: 256Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+
+  erp:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 125m
+        memory: 256Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+
+  notification:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 250m
+        memory: 512Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+    autoscaling:
+      enabled: true
+      minReplicas: 1
+      maxReplicas: 3
+
+# Infrastructure with staging resources
+infrastructure:
+  postgresql:
+    primary:
+      persistence:
+        size: 50Gi
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+        requests:
+          cpu: 250m
+          memory: 512Mi
+    readReplicas:
+      replicaCount: 1
+      persistence:
+        size: 50Gi
+
+  redis:
+    master:
+      persistence:
+        size: 10Gi
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 125m
+          memory: 256Mi
+    replica:
+      replicaCount: 1
+
+  qdrant:
+    replicaCount: 1
+    persistence:
+      size: 25Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+
+# Enable TLS in staging
+ingress:
+  enabled: true
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+
+# Moderate monitoring resources
+monitoring:
+  prometheus:
+    server:
+      persistentVolume:
+        size: 25Gi
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+        requests:
+          cpu: 250m
+          memory: 512Mi
+
+  grafana:
+    persistence:
+      size: 5Gi
+    resources:
+      limits:
+        cpu: 250m
+        memory: 512Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+
+# Enable backup in staging
+backup:
+  enabled: true
+  schedule: "0 4 * * *"  # Daily at 4 AM
+  retention: "7d"
+  s3:
+    bucket: wearforce-clean-staging-backups
+    region: us-west-2

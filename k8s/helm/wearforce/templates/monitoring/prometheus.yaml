@@ -1,0 +1,366 @@
+{{- if .Values.monitoring.prometheus.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - services
+  - endpoints
+  - pods
+  verbs: ["get", "list", "watch"]
+- apiGroups:
+  - extensions
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+subjects:
+- kind: ServiceAccount
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: {{ .Values.global.environment }}
+        region: {{ .Values.global.region | default "us-west-2" }}
+
+    rule_files:
+      - "/etc/prometheus/rules/*.yml"
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - {{ include "wearforce-clean.fullname" . }}-alertmanager:9093
+
+    scrape_configs:
+    # Kubernetes API Server
+    - job_name: 'kubernetes-apiservers'
+      kubernetes_sd_configs:
+      - role: endpoints
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+
+    # Kubernetes Nodes
+    - job_name: 'kubernetes-nodes'
+      kubernetes_sd_configs:
+      - role: node
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics
+
+    # Kubernetes Pods
+    - job_name: 'kubernetes-pods'
+      kubernetes_sd_configs:
+      - role: pod
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+    # WearForce Services
+    - job_name: 'wearforce-clean-gateway'
+      static_configs:
+      - targets: ['{{ include "wearforce-clean.fullname" . }}-gateway:{{ .Values.gateway.service.metrics.port }}']
+      scrape_interval: 10s
+      metrics_path: /metrics
+      
+    - job_name: 'wearforce-clean-ai-services'
+      static_configs:
+      - targets:
+        - '{{ include "wearforce-clean.fullname" . }}-llm:{{ .Values.aiServices.llm.service.port }}'
+        - '{{ include "wearforce-clean.fullname" . }}-nlu:{{ .Values.aiServices.nlu.service.port }}'
+        - '{{ include "wearforce-clean.fullname" . }}-rag:{{ .Values.aiServices.rag.service.port }}'
+        - '{{ include "wearforce-clean.fullname" . }}-stt:{{ .Values.aiServices.stt.service.port }}'
+        - '{{ include "wearforce-clean.fullname" . }}-tts:{{ .Values.aiServices.tts.service.port }}'
+      scrape_interval: 15s
+      metrics_path: /metrics
+
+    - job_name: 'wearforce-clean-business-services'
+      static_configs:
+      - targets:
+        - '{{ include "wearforce-clean.fullname" . }}-graphql:{{ .Values.businessServices.graphql.service.port }}'
+        - '{{ include "wearforce-clean.fullname" . }}-crm:{{ .Values.businessServices.crm.service.port }}'
+        - '{{ include "wearforce-clean.fullname" . }}-erp:{{ .Values.businessServices.erp.service.port }}'
+        - '{{ include "wearforce-clean.fullname" . }}-notification:{{ .Values.businessServices.notification.service.port }}'
+      scrape_interval: 15s
+      metrics_path: /metrics
+
+    # PostgreSQL Exporter
+    - job_name: 'postgresql'
+      static_configs:
+      - targets: ['{{ include "wearforce-clean.fullname" . }}-postgresql-metrics:9187']
+      scrape_interval: 30s
+
+    # Redis Exporter
+    - job_name: 'redis'
+      static_configs:
+      - targets: ['{{ include "wearforce-clean.fullname" . }}-redis-metrics:9121']
+      scrape_interval: 30s
+
+  alert_rules.yml: |
+    groups:
+    - name: wearforce-clean.rules
+      rules:
+      # High CPU Usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is above 80% for more than 10 minutes"
+
+      # High Memory Usage
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemFree_bytes - node_memory_Buffers_bytes - node_memory_Cached_bytes) / node_memory_MemTotal_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          service: infrastructure
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 90% for more than 5 minutes"
+
+      # Pod Crash Loop
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: kubernetes
+        annotations:
+          summary: "Pod is crash looping"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+
+      # Service Down
+      - alert: ServiceDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service is down"
+          description: "Service {{ $labels.job }} is down for more than 5 minutes"
+
+      # High Response Time
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: application
+        annotations:
+          summary: "High response time"
+          description: "95th percentile response time is above 2 seconds"
+
+      # Database Connection Issues
+      - alert: DatabaseConnectionHigh
+        expr: postgresql_stat_database_numbackends / postgresql_settings_max_connections * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "High database connections"
+          description: "Database connections are above 80% of max connections"
+
+      # Redis Memory Usage
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: cache
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis memory usage is above 90%"
+
+      # Disk Space Usage
+      - alert: DiskSpaceHigh
+        expr: (node_filesystem_size_bytes{fstype!="tmpfs"} - node_filesystem_free_bytes{fstype!="tmpfs"}) / node_filesystem_size_bytes{fstype!="tmpfs"} * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "Disk space usage high"
+          description: "Disk space usage is above 85% on {{ $labels.device }}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "wearforce-clean.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: prometheus
+  template:
+    metadata:
+      labels:
+        {{- include "wearforce-clean.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: prometheus
+    spec:
+      serviceAccountName: {{ include "wearforce-clean.fullname" . }}-prometheus
+      containers:
+      - name: prometheus
+        image: prom/prometheus:v2.48.0
+        args:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+        - '--storage.tsdb.path=/prometheus'
+        - '--storage.tsdb.retention.time={{ .Values.monitoring.prometheus.server.retention | default "30d" }}'
+        - '--web.console.libraries=/etc/prometheus/console_libraries'
+        - '--web.console.templates=/etc/prometheus/consoles'
+        - '--web.enable-lifecycle'
+        - '--web.enable-admin-api'
+        ports:
+        - containerPort: 9090
+          name: prometheus
+        volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+        - name: storage
+          mountPath: /prometheus
+        resources:
+          {{- toYaml .Values.monitoring.prometheus.server.resources | nindent 12 }}
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "wearforce-clean.fullname" . }}-prometheus-config
+      - name: storage
+        {{- if .Values.monitoring.prometheus.server.persistentVolume.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ include "wearforce-clean.fullname" . }}-prometheus
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+---
+{{- if .Values.monitoring.prometheus.server.persistentVolume.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.global.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.monitoring.prometheus.server.persistentVolume.size }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-prometheus
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  ports:
+  - port: 9090
+    targetPort: 9090
+    name: prometheus
+  selector:
+    {{- include "wearforce-clean.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+{{- end }}

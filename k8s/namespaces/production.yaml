@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    name: production
+    environment: production
+    managed-by: helm
+    istio-injection: enabled
+  annotations:
+    wearforce-clean.io/description: "Production environment for WearForce application"
+    wearforce-clean.io/team: "platform"
+    wearforce-clean.io/cost-center: "production"
+
+---
+# Resource Quota for production environment
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    requests.cpu: "100"
+    requests.memory: 200Gi
+    limits.cpu: "200"
+    limits.memory: 400Gi
+    requests.nvidia.com/gpu: "8"
+    persistentvolumeclaims: "50"
+    pods: "200"
+    services: "50"
+    secrets: "200"
+    configmaps: "200"
+
+---
+# Limit Range for pod resources
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limits
+  namespace: production
+spec:
+  limits:
+  - default:
+      cpu: "2"
+      memory: "4Gi"
+    defaultRequest:
+      cpu: "500m"
+      memory: "512Mi"
+    type: Container
+  - max:
+      cpu: "16"
+      memory: "32Gi"
+    min:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container
+  - max:
+      storage: "500Gi"
+    min:
+      storage: "1Gi"
+    type: PersistentVolumeClaim
+
+---
+# Network Policy for production environment (more restrictive)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: production-network-policy
+  namespace: production
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    # Allow ingress only from same namespace
+    - namespaceSelector:
+        matchLabels:
+          name: production
+    # Allow ingress from Istio system
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    # Allow ingress from monitoring
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    # Allow ingress from ingress controllers
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          app: nginx-ingress-controller
+  egress:
+  # Allow egress to same namespace
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: production
+  # Allow egress to Istio system
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  # Allow egress to kube-system for DNS
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow egress to external services (can be restricted further)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443  # HTTPS
+    - protocol: TCP
+      port: 80   # HTTP
+
+---
+# Pod Security Policy for production
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: production-psp
+  namespace: production
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+    - ALL
+  volumes:
+    - 'configMap'
+    - 'emptyDir'
+    - 'projected'
+    - 'secret'
+    - 'downwardAPI'
+    - 'persistentVolumeClaim'
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  seLinux:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'

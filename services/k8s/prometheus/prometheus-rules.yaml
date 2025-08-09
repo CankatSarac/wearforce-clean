@@ -1,0 +1,344 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+data:
+  wearforce-clean-alerts.yml: |
+    groups:
+    - name: wearforce-clean.infrastructure
+      interval: 30s
+      rules:
+      # High CPU Usage
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is above 80% on {{ $labels.instance }} for more than 5 minutes"
+          
+      # High Memory Usage
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is above 85% on {{ $labels.instance }} for more than 5 minutes"
+          
+      # Disk Space Low
+      - alert: DiskSpaceLow
+        expr: (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "Disk space is running low"
+          description: "Disk usage is above 85% on {{ $labels.instance }} mount {{ $labels.mountpoint }}"
+          
+      # Node Down
+      - alert: NodeDown
+        expr: up{job="node-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: infrastructure
+        annotations:
+          summary: "Node is down"
+          description: "Node {{ $labels.instance }} has been down for more than 1 minute"
+
+    - name: wearforce-clean.application
+      interval: 30s
+      rules:
+      # Service Down
+      - alert: ServiceDown
+        expr: up{job=~"wearforce-clean-.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: application
+        annotations:
+          summary: "WearForce service is down"
+          description: "{{ $labels.job }} service has been down for more than 2 minutes"
+          
+      # High Error Rate
+      - alert: HighErrorRate
+        expr: (wearforce-clean:http_errors:rate5m / wearforce-clean:http_requests:rate5m) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: application
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value }}% for {{ $labels.job }} service"
+          
+      # High Response Time
+      - alert: HighResponseTime
+        expr: wearforce-clean:http_duration:p95 > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: application
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s for {{ $labels.job }} service"
+          
+      # Critical Response Time
+      - alert: CriticalResponseTime
+        expr: wearforce-clean:http_duration:p95 > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: application
+        annotations:
+          summary: "Critical response time detected"
+          description: "95th percentile response time is {{ $value }}s for {{ $labels.job }} service"
+
+    - name: wearforce-clean.database
+      interval: 30s
+      rules:
+      # Database Connection Pool High
+      - alert: DatabaseConnectionPoolHigh
+        expr: wearforce-clean:db_pool:utilization > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Database connection pool usage high"
+          description: "Database connection pool usage is {{ $value }}% for {{ $labels.instance }}"
+          
+      # Database Down
+      - alert: DatabaseDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "Database is down"
+          description: "PostgreSQL database has been down for more than 1 minute"
+          
+      # Database Slow Queries
+      - alert: DatabaseSlowQueries
+        expr: pg_stat_activity_max_tx_duration > 300
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Database slow queries detected"
+          description: "Long running queries detected (>5 minutes) on {{ $labels.instance }}"
+
+    - name: wearforce-clean.redis
+      interval: 30s
+      rules:
+      # Redis Memory High
+      - alert: RedisMemoryHigh
+        expr: wearforce-clean:redis:memory_utilization > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis memory usage is {{ $value }}% on {{ $labels.instance }}"
+          
+      # Redis Down
+      - alert: RedisDown
+        expr: up{job="redis-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis is down"
+          description: "Redis instance {{ $labels.instance }} has been down for more than 1 minute"
+
+    - name: wearforce-clean.business
+      interval: 60s
+      rules:
+      # Low Order Completion Rate
+      - alert: LowOrderCompletionRate
+        expr: wearforce-clean:orders:completion_rate < 0.95
+        for: 15m
+        labels:
+          severity: warning
+          service: business
+        annotations:
+          summary: "Order completion rate is low"
+          description: "Order completion rate is {{ $value }}% which is below the 95% threshold"
+          
+      # Customer Growth Stagnation
+      - alert: CustomerGrowthStagnation
+        expr: wearforce-clean:customers:growth_rate_daily < 1
+        for: 1d
+        labels:
+          severity: warning
+          service: business
+        annotations:
+          summary: "Customer growth has stagnated"
+          description: "Daily customer growth is {{ $value }} which is below expected threshold"
+          
+      # Revenue Drop
+      - alert: RevenueDropDetected
+        expr: (wearforce-clean:revenue:daily - wearforce-clean:revenue:daily offset 1d) / wearforce-clean:revenue:daily offset 1d < -0.1
+        for: 1h
+        labels:
+          severity: critical
+          service: business
+        annotations:
+          summary: "Significant revenue drop detected"
+          description: "Daily revenue has dropped by more than 10% compared to yesterday"
+
+    - name: wearforce-clean.security
+      interval: 30s
+      rules:
+      # High Failed Authentication Rate
+      - alert: HighFailedAuthRate
+        expr: rate(auth_failures_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "High authentication failure rate"
+          description: "Authentication failure rate is {{ $value }} failures per second"
+          
+      # Suspicious Activity Detected
+      - alert: SuspiciousActivity
+        expr: rate(suspicious_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          service: security
+        annotations:
+          summary: "Suspicious activity detected"
+          description: "Suspicious activity rate is {{ $value }} requests per second"
+          
+      # Certificate Expiring Soon
+      - alert: CertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 7
+        for: 1h
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "SSL certificate expiring soon"
+          description: "SSL certificate for {{ $labels.instance }} expires in {{ $value }} days"
+
+    - name: wearforce-clean.slo
+      interval: 30s
+      rules:
+      # API Availability SLO (99.9%)
+      - alert: APIAvailabilitySLOBreach
+        expr: (1 - (wearforce-clean:http_errors:rate5m / wearforce-clean:http_requests:rate5m)) < 0.999
+        for: 5m
+        labels:
+          severity: critical
+          service: slo
+          slo: availability
+        annotations:
+          summary: "API Availability SLO breached"
+          description: "API availability is {{ $value }}% which is below the 99.9% SLO"
+          
+      # Response Time SLO (95% < 500ms)
+      - alert: ResponseTimeSLOBreach
+        expr: wearforce-clean:http_duration:p95 > 0.5
+        for: 5m
+        labels:
+          severity: critical
+          service: slo
+          slo: latency
+        annotations:
+          summary: "Response Time SLO breached"
+          description: "95th percentile response time is {{ $value }}s which exceeds the 500ms SLO"
+
+  recording-rules.yml: |
+    groups:
+    - name: wearforce-clean.recording_rules
+      interval: 30s
+      rules:
+      # HTTP Request Rates
+      - record: wearforce-clean:http_requests:rate1m
+        expr: rate(http_requests_total[1m])
+      - record: wearforce-clean:http_requests:rate5m
+        expr: rate(http_requests_total[5m])
+      - record: wearforce-clean:http_requests:rate15m
+        expr: rate(http_requests_total[15m])
+        
+      # HTTP Error Rates
+      - record: wearforce-clean:http_errors:rate1m
+        expr: rate(http_errors_total[1m])
+      - record: wearforce-clean:http_errors:rate5m
+        expr: rate(http_errors_total[5m])
+      - record: wearforce-clean:http_errors:rate15m
+        expr: rate(http_errors_total[15m])
+        
+      # Response Time Percentiles
+      - record: wearforce-clean:http_duration:p50
+        expr: histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))
+      - record: wearforce-clean:http_duration:p90
+        expr: histogram_quantile(0.90, rate(http_request_duration_seconds_bucket[5m]))
+      - record: wearforce-clean:http_duration:p95
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+      - record: wearforce-clean:http_duration:p99
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
+        
+      # Error Rates by Service
+      - record: wearforce-clean:error_rate_by_service
+        expr: sum(rate(http_errors_total[5m])) by (service) / sum(rate(http_requests_total[5m])) by (service)
+        
+      # Request Volume by Service
+      - record: wearforce-clean:request_volume_by_service
+        expr: sum(rate(http_requests_total[5m])) by (service)
+        
+      # Database Metrics
+      - record: wearforce-clean:db_connections_active
+        expr: sum(pg_stat_database_numbackends) by (instance)
+      - record: wearforce-clean:db_connections_max
+        expr: sum(pg_settings_max_connections) by (instance)
+      - record: wearforce-clean:db_connection_utilization
+        expr: wearforce-clean:db_connections_active / wearforce-clean:db_connections_max
+        
+      # Redis Metrics
+      - record: wearforce-clean:redis_memory_used
+        expr: sum(redis_memory_used_bytes) by (instance)
+      - record: wearforce-clean:redis_memory_max
+        expr: sum(redis_memory_max_bytes) by (instance)
+      - record: wearforce-clean:redis_memory_utilization
+        expr: wearforce-clean:redis_memory_used / wearforce-clean:redis_memory_max
+        
+      # Business Metrics
+      - record: wearforce-clean:customers_total
+        expr: wearforce-clean_customers_total
+      - record: wearforce-clean:orders_total
+        expr: wearforce-clean_orders_total
+      - record: wearforce-clean:revenue_total
+        expr: wearforce-clean_revenue_total
+        
+      # Growth Rates
+      - record: wearforce-clean:customers_growth_rate_hourly
+        expr: increase(wearforce-clean_customers_total[1h])
+      - record: wearforce-clean:customers_growth_rate_daily
+        expr: increase(wearforce-clean_customers_total[1d])
+      - record: wearforce-clean:orders_growth_rate_hourly
+        expr: increase(wearforce-clean_orders_total[1h])
+      - record: wearforce-clean:orders_growth_rate_daily
+        expr: increase(wearforce-clean_orders_total[1d])
+        
+      # System Resource Utilization
+      - record: wearforce-clean:cpu_utilization
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+      - record: wearforce-clean:memory_utilization
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
+      - record: wearforce-clean:disk_utilization
+        expr: (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})) * 100

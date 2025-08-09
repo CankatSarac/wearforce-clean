@@ -1,0 +1,80 @@
+# OPA Configuration for WearForce Gateway
+services:
+  authz:
+    url: http://opa:8181
+    credentials:
+      bearer:
+        token: "opa-gateway-token-change-in-production"
+
+bundles:
+  wearforce-clean:
+    resource: "/v1/bundles/wearforce-clean"
+    service: authz
+    polling:
+      min_delay_seconds: 10
+      max_delay_seconds: 20
+    signing:
+      keyid: "wearforce-clean_key"
+      algorithm: "RS256"
+
+decision_logs:
+  service: authz
+  reporting:
+    min_delay_seconds: 5
+    max_delay_seconds: 10
+  masking:
+    # Mask sensitive data in decision logs
+    - path: ["input", "user", "password"]
+    - path: ["input", "user", "token"]
+    - path: ["input", "body", "password"]
+    - path: ["input", "body", "credit_card"]
+    - path: ["input", "body", "ssn"]
+
+status:
+  service: authz
+  partition_name: wearforce-clean-gateway
+
+plugins:
+  envoy_ext_authz_grpc:
+    addr: :9191
+    query: data.wearforce-clean.authz.allow
+    enable_reflection: true
+
+# Default decision for when OPA is unavailable
+default_decision: "deny"
+
+# Query timeout
+query_timeout: 10s
+
+# Cache configuration
+cache:
+  inter_query_builtin_cache:
+    max_size_bytes: 10485760  # 10MB
+
+# Profiling (disable in production)
+profiling:
+  enabled: false
+  
+# Server configuration
+server:
+  addr: 0.0.0.0:8181
+  diagnostic_addr: 0.0.0.0:8282
+  
+# Authentication for OPA API
+authentication:
+  bearer:
+    token: "opa-admin-token-change-in-production"
+    
+# Authorization for OPA management APIs
+authorization:
+  default_decision: "deny"
+  
+# Distributed tracing
+distributed_tracing:
+  type: jaeger
+  service_name: opa-gateway
+  sampler:
+    type: const
+    param: 1
+  jaeger:
+    endpoint: http://jaeger:14268/api/traces

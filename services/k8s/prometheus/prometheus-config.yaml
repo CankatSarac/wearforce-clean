@@ -1,0 +1,231 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+  labels:
+    app: prometheus
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: wearforce-clean-production
+        environment: production
+        
+    rule_files:
+      - "/etc/prometheus/rules/*.yml"
+      
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - alertmanager:9093
+          path_prefix: /
+          scheme: http
+          
+    scrape_configs:
+      # Prometheus itself
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+        scrape_interval: 30s
+        
+      # Node Exporter
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - source_labels: [__address__]
+            regex: '(.*):10250'
+            target_label: __address__
+            replacement: '${1}:9100'
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: instance
+            
+      # Kubernetes API Server
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+            
+      # Kubernetes Nodes
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+            
+      # Kubernetes Pods
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: kubernetes_pod_name
+            
+      # WearForce Services
+      - job_name: 'wearforce-clean-crm'
+        static_configs:
+          - targets: ['crm-service:8001']
+        metrics_path: '/metrics'
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        
+      - job_name: 'wearforce-clean-erp'
+        static_configs:
+          - targets: ['erp-service:8002']
+        metrics_path: '/metrics'
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        
+      - job_name: 'wearforce-clean-notification'
+        static_configs:
+          - targets: ['notification-service:8003']
+        metrics_path: '/metrics'
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        
+      - job_name: 'wearforce-clean-graphql'
+        static_configs:
+          - targets: ['graphql-gateway:8000']
+        metrics_path: '/metrics'
+        scrape_interval: 15s
+        scrape_timeout: 10s
+        
+      # Database Monitoring
+      - job_name: 'postgres-exporter'
+        static_configs:
+          - targets: ['postgres-exporter:9187']
+        scrape_interval: 30s
+        
+      - job_name: 'redis-exporter'
+        static_configs:
+          - targets: ['redis-exporter:9121']
+        scrape_interval: 30s
+        
+      # NATS Monitoring
+      - job_name: 'nats-exporter'
+        static_configs:
+          - targets: ['nats:8222']
+        metrics_path: '/metrics'
+        scrape_interval: 30s
+        
+      # Black Box Exporter for endpoint monitoring
+      - job_name: 'blackbox-http'
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets:
+            - https://api.wearforce-clean.com/health
+            - https://app.wearforce-clean.com/health
+            - https://admin.wearforce-clean.com/health
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+            
+      # SSL Certificate Monitoring
+      - job_name: 'blackbox-ssl'
+        metrics_path: /probe
+        params:
+          module: [tcp_connect]
+        static_configs:
+          - targets:
+            - api.wearforce-clean.com:443
+            - app.wearforce-clean.com:443
+            - admin.wearforce-clean.com:443
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+            
+      # Custom Business Metrics
+      - job_name: 'business-metrics'
+        static_configs:
+          - targets: ['business-metrics-exporter:8080']
+        scrape_interval: 60s
+        metrics_path: '/metrics'
+        
+    # Recording rules for performance
+    recording_rules:
+      - name: wearforce-clean.rules
+        rules:
+          # Request rate
+          - record: wearforce-clean:http_requests:rate5m
+            expr: rate(http_requests_total[5m])
+            
+          # Error rate
+          - record: wearforce-clean:http_errors:rate5m
+            expr: rate(http_errors_total[5m])
+            
+          # Response time percentiles
+          - record: wearforce-clean:http_duration:p95
+            expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+            
+          - record: wearforce-clean:http_duration:p99
+            expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
+            
+          # Database connection pool usage
+          - record: wearforce-clean:db_pool:utilization
+            expr: db_pool_active_connections / db_pool_max_connections
+            
+          # Redis memory usage
+          - record: wearforce-clean:redis:memory_utilization
+            expr: redis_memory_used_bytes / redis_memory_max_bytes
+            
+          # Business metrics
+          - record: wearforce-clean:customers:growth_rate_daily
+            expr: increase(wearforce-clean_customers_total[1d])
+            
+          - record: wearforce-clean:orders:completion_rate
+            expr: wearforce-clean_orders_completed_total / wearforce-clean_orders_total
+            
+          - record: wearforce-clean:revenue:daily
+            expr: increase(wearforce-clean_revenue_total[1d])

@@ -1,0 +1,184 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-gateway-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: wearforce-clean
+data:
+  gateway.yaml: |
+    # Gateway Configuration
+    server:
+      http:
+        host: "0.0.0.0"
+        port: {{ .Values.gateway.service.http.targetPort }}
+        read_timeout: 30s
+        write_timeout: 30s
+        idle_timeout: 120s
+      grpc:
+        host: "0.0.0.0"  
+        port: {{ .Values.gateway.service.grpc.targetPort }}
+        max_receive_message_size: 4194304  # 4MB
+        max_send_message_size: 4194304     # 4MB
+      metrics:
+        host: "0.0.0.0"
+        port: {{ .Values.gateway.service.metrics.targetPort }}
+        path: "/metrics"
+
+    # Service Discovery
+    services:
+      ai_services:
+        llm:
+          host: {{ include "wearforce-clean.fullname" . }}-llm
+          port: {{ .Values.aiServices.llm.service.port }}
+          timeout: 30s
+          max_retries: 3
+        nlu:
+          host: {{ include "wearforce-clean.fullname" . }}-nlu
+          port: {{ .Values.aiServices.nlu.service.port }}
+          timeout: 15s
+          max_retries: 3
+        rag:
+          host: {{ include "wearforce-clean.fullname" . }}-rag
+          port: {{ .Values.aiServices.rag.service.port }}
+          timeout: 20s
+          max_retries: 3
+        stt:
+          host: {{ include "wearforce-clean.fullname" . }}-stt
+          port: {{ .Values.aiServices.stt.service.port }}
+          timeout: 30s
+          max_retries: 2
+        tts:
+          host: {{ include "wearforce-clean.fullname" . }}-tts
+          port: {{ .Values.aiServices.tts.service.port }}
+          timeout: 20s
+          max_retries: 2
+      business_services:
+        crm:
+          host: {{ include "wearforce-clean.fullname" . }}-crm
+          port: {{ .Values.businessServices.crm.service.port }}
+          timeout: 15s
+          max_retries: 3
+        erp:
+          host: {{ include "wearforce-clean.fullname" . }}-erp
+          port: {{ .Values.businessServices.erp.service.port }}
+          timeout: 15s
+          max_retries: 3
+        graphql:
+          host: {{ include "wearforce-clean.fullname" . }}-graphql
+          port: {{ .Values.businessServices.graphql.service.port }}
+          timeout: 15s
+          max_retries: 3
+        notification:
+          host: {{ include "wearforce-clean.fullname" . }}-notification
+          port: {{ .Values.businessServices.notification.service.port }}
+          timeout: 10s
+          max_retries: 3
+
+    # Authentication & Authorization
+    auth:
+      jwt:
+        issuer: "wearforce-clean-gateway"
+        audience: "wearforce-clean-api"
+        expiry: 3600  # 1 hour
+        refresh_expiry: 604800  # 1 week
+      keycloak:
+        base_url: "http://keycloak:8080"
+        realm: "wearforce-clean"
+        client_id: "gateway"
+
+    # Rate Limiting
+    rate_limit:
+      enabled: true
+      requests_per_minute: 1000
+      burst_size: 100
+      cleanup_interval: 60s
+
+    # CORS Configuration
+    cors:
+      allowed_origins:
+        - "https://{{ .Values.global.domain }}"
+        - "https://app.{{ .Values.global.domain }}"
+        {{- if eq .Values.global.environment "development" }}
+        - "http://localhost:3000"
+        - "http://localhost:3001"
+        {{- end }}
+      allowed_methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+      allowed_headers:
+        - "*"
+      expose_headers:
+        - "X-Request-ID"
+        - "X-Response-Time"
+      allow_credentials: true
+      max_age: 3600
+
+    # Tracing Configuration
+    tracing:
+      enabled: {{ .Values.gateway.env.GATEWAY_TRACING_ENABLED | default "false" }}
+      service_name: "wearforce-clean-gateway"
+      {{- if .Values.monitoring.jaeger.enabled }}
+      exporter:
+        endpoint: "http://{{ .Release.Name }}-jaeger-collector:14268/api/traces"
+        timeout: 5s
+      {{- end }}
+      sampling_rate: 0.1
+
+    # Logging Configuration
+    logging:
+      level: {{ .Values.gateway.env.LOG_LEVEL | default "info" }}
+      format: "json"
+      output: "stdout"
+      access_log: true
+
+    # Health Check Configuration
+    health:
+      enabled: true
+      path: {{ .Values.gateway.healthcheck.path | default "/health" }}
+      check_services: true
+      timeout: 5s
+
+  # Nginx upstream configuration for load balancing
+  nginx.conf: |
+    upstream gateway_backend {
+        least_conn;
+        {{- $fullName := include "wearforce-clean.fullname" . -}}
+        {{- range $i := until (int .Values.gateway.replicaCount) }}
+        server {{ $fullName }}-gateway-{{ $i }}.{{ $fullName }}-gateway-headless:{{ $.Values.gateway.service.http.targetPort }} max_fails=3 fail_timeout=30s;
+        {{- end }}
+    }
+
+    server {
+        listen 80;
+        server_name {{ .Values.global.domain }};
+
+        location / {
+            proxy_pass http://gateway_backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # Health check
+            proxy_connect_timeout 5s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            
+            # Rate limiting
+            limit_req zone=api burst=20 nodelay;
+        }
+
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+{{- end }}

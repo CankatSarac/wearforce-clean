@@ -1,0 +1,167 @@
+version: '3.8'
+
+# WearForce-Clean Gateway Port Override Configuration
+# This file modifies ports to avoid conflicts with the original WearForce project
+
+services:
+  # Gateway Service - Modified Ports
+  gateway:
+    ports:
+      - "8180:8080"  # HTTP - Changed from 8080 to 8180
+      - "8181:8081"  # gRPC - Changed from 8081 to 8181
+      - "9190:9090"  # Metrics - Changed from 9090 to 9190
+    environment:
+      - GATEWAY_REDIS_ADDRESS=redis:6379
+      - GATEWAY_JWT_KEYCLOAK_BASE_URL=http://keycloak:8080
+      - GATEWAY_JWT_KEYCLOAK_REALM=wearforce-clean
+      - GATEWAY_JWT_KEYCLOAK_CLIENT_ID=wearforce-clean-gateway
+      - GATEWAY_JWT_ISSUER=http://keycloak:8080/auth/realms/wearforce-clean
+      - GATEWAY_JWT_AUDIENCE=wearforce-clean-gateway
+      - GATEWAY_TRACING_ENABLED=true
+      - GATEWAY_TRACING_EXPORTER_ENDPOINT=http://jaeger:14268/api/traces
+      - GATEWAY_LOGGING_LEVEL=info
+
+  # Redis - Modified Port
+  redis:
+    ports:
+      - "6479:6379"  # Changed from 6379 to 6479
+
+  # Keycloak - Modified Port and Configuration
+  keycloak:
+    ports:
+      - "8190:8080"  # Changed from 8090 to 8190
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin123
+      - KC_DB=postgres
+      - KC_DB_URL=jdbc:postgresql://postgres:5432/keycloak
+      - KC_DB_USERNAME=keycloak
+      - KC_DB_PASSWORD=keycloak123
+      - KC_HOSTNAME_STRICT=false
+      - KC_HTTP_ENABLED=true
+      - KC_METRICS_ENABLED=true
+      - KC_HEALTH_ENABLED=true
+      - KC_LOG_LEVEL=INFO
+      - KC_CACHE=ispn
+      - KC_CACHE_STACK=kubernetes
+      - SERVICE_CLIENT_SECRET=wearforce-clean-services-secret-2025
+
+  # PostgreSQL - Modified Port
+  postgres:
+    ports:
+      - "5532:5432"  # Changed from 5432 to 5532
+    environment:
+      - POSTGRES_DB=keycloak
+      - POSTGRES_USER=keycloak
+      - POSTGRES_PASSWORD=keycloak123
+
+  # Vector Database - Modified Ports
+  qdrant:
+    ports:
+      - "6433:6333"  # Changed from 6333 to 6433
+      - "6434:6334"  # Changed from 6334 to 6434
+
+  # AI Services - Modified Ports and Configuration
+  llm-service:
+    ports:
+      - "9004:8004"  # Changed from 8004 to 9004
+    environment:
+      - SERVICE_NAME=llm-service
+      - PORT=8004
+      - DEBUG=false
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=wearforce-clean
+      - DB_PASSWORD=wearforce-clean123
+      - DB_NAME=wearforce-clean
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+      - TENSOR_PARALLEL_SIZE=1
+      - MAX_NUM_SEQS=256
+      - MAX_MODEL_LEN=4096
+      - BATCH_SIZE=32
+      - BATCH_TIMEOUT=0.1
+
+  nlu-service:
+    ports:
+      - "9003:8003"  # Changed from 8003 to 9003
+    environment:
+      - SERVICE_NAME=nlu-service
+      - PORT=8003
+      - DEBUG=false
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=wearforce-clean
+      - DB_PASSWORD=wearforce-clean123
+      - DB_NAME=wearforce-clean
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+      - MAX_CONVERSATION_HISTORY=50
+      - CONVERSATION_TTL=3600
+      - CRM_API_URL=http://gateway:8080/api/crm
+      - ERP_API_URL=http://gateway:8080/api/erp
+
+  rag-service:
+    ports:
+      - "9005:8005"  # Changed from 8005 to 9005
+    environment:
+      - SERVICE_NAME=rag-service
+      - PORT=8005
+      - DEBUG=false
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=wearforce-clean
+      - DB_PASSWORD=wearforce-clean123
+      - DB_NAME=wearforce-clean
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=wearforce_clean_docs
+      - EMBEDDING_DIM=384
+      - LOG_LEVEL=INFO
+      - CHUNK_SIZE=512
+      - CHUNK_OVERLAP=50
+      - TOP_K=5
+      - SIMILARITY_THRESHOLD=0.7
+      - DENSE_WEIGHT=0.7
+      - SPARSE_WEIGHT=0.3
+
+  # Monitoring Services - Modified Ports
+  prometheus:
+    ports:
+      - "9191:9090"  # Changed from 9091 to 9191
+
+  grafana:
+    ports:
+      - "3002:3000"  # Changed from 3001 to 3002
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+
+  jaeger:
+    ports:
+      - "16687:16686"  # Jaeger UI - Changed from 16686 to 16687
+      - "14269:14268"  # Jaeger collector - Changed from 14268 to 14269
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  # Open Policy Agent - Modified Ports
+  opa:
+    ports:
+      - "8281:8181"  # OPA API - Changed from 8181 to 8281
+      - "8282:8182"  # OPA Decision API - Changed from 8182 to 8282
+
+  # Nginx - Modified Ports  
+  nginx:
+    ports:
+      - "8280:80"   # Changed from 80 to 8280
+      - "8443:443"  # Changed from 443 to 8443
+
+# Use clean-specific network
+networks:
+  wearforce-clean-network:
+    driver: bridge

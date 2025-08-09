@@ -1,0 +1,166 @@
+{{- if .Values.aiServices.llm.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-llm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-service
+  annotations:
+    deployment.kubernetes.io/revision: "{{ .Release.Revision }}"
+spec:
+  replicas: {{ .Values.aiServices.llm.replicaCount | default 2 }}
+  {{- include "wearforce-clean.deploymentStrategy" . | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "wearforce-clean.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: llm-service
+  template:
+    metadata:
+      labels:
+        {{- include "wearforce-clean.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: llm-service
+        version: {{ .Values.global.image.tag | default .Chart.AppVersion }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+        checksum/config: {{ include (print $.Template.BasePath "/ai-services/llm-configmap.yaml") . | sha256sum }}
+    spec:
+      {{- include "wearforce-clean.podSecurityContext" . | nindent 6 }}
+      serviceAccountName: {{ include "wearforce-clean.serviceAccountName" . }}
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- include "wearforce-clean.nodeAffinity" . | nindent 8 }}
+        {{- include "wearforce-clean.podAntiAffinity" (dict "component" "llm-service" "Chart" .Chart "Values" .Values) | nindent 8 }}
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                - p3.2xlarge
+                - p3.8xlarge
+                - p3.16xlarge
+                - g4dn.xlarge
+                - g4dn.2xlarge
+                - g4dn.4xlarge
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+      - name: model-downloader
+        image: {{ include "wearforce-clean.image" (dict "service" "model-downloader" "Values" .Values) }}
+        {{- include "wearforce-clean.securityContext" . | nindent 8 }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Downloading LLM models..."
+          if [ ! -f /models/.model_ready ]; then
+            python -m huggingface_hub.download --repo-id microsoft/DialoGPT-large --local-dir /models/
+            touch /models/.model_ready
+          fi
+          echo "Models ready"
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+        env:
+        - name: HF_HOME
+          value: /models
+        - name: TRANSFORMERS_CACHE
+          value: /models
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+      containers:
+      - name: llm-service
+        image: {{ include "wearforce-clean.image" (dict "service" "llm-service" "Values" .Values) }}
+        imagePullPolicy: {{ .Values.global.image.pullPolicy | default "IfNotPresent" }}
+        {{- include "wearforce-clean.securityContext" . | nindent 8 }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.aiServices.llm.service.targetPort | default 8004 }}
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        - name: grpc
+          containerPort: 8044
+          protocol: TCP
+        env:
+        {{- include "wearforce-clean.commonEnv" (dict "service" "llm-service" "Values" .Values) | nindent 8 }}
+        {{- include "wearforce-clean.redisEnv" . | nindent 8 }}
+        - name: MODEL_PATH
+          value: "/models"
+        - name: GPU_MEMORY_UTILIZATION
+          value: "0.8"
+        - name: TENSOR_PARALLEL_SIZE
+          value: {{ .Values.aiServices.llm.env.TENSOR_PARALLEL_SIZE | default "1" | quote }}
+        - name: MAX_NUM_SEQS
+          value: {{ .Values.aiServices.llm.env.MAX_NUM_SEQS | default "256" | quote }}
+        - name: MAX_MODEL_LEN
+          value: {{ .Values.aiServices.llm.env.MAX_MODEL_LEN | default "4096" | quote }}
+        - name: BATCH_SIZE
+          value: {{ .Values.aiServices.llm.env.BATCH_SIZE | default "32" | quote }}
+        {{- with .Values.aiServices.llm.env }}
+        {{- range $key, $value := . }}
+        - name: {{ $key }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- end }}
+        {{- include "wearforce-clean.healthProbes" .Values.aiServices.llm | nindent 8 }}
+        {{- include "wearforce-clean.resources" .Values.aiServices.llm | nindent 8 }}
+        volumeMounts:
+        {{- include "wearforce-clean.tempVolumeMounts" . | nindent 8 }}
+        - name: model-cache
+          mountPath: /models
+          readOnly: true
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+      nodeSelector:
+        accelerator: nvidia-tesla-k80
+      volumes:
+      {{- include "wearforce-clean.tempVolumes" . | nindent 6 }}
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: {{ include "wearforce-clean.fullname" . }}-llm-models
+      - name: config
+        configMap:
+          name: {{ include "wearforce-clean.fullname" . }}-llm-config
+---
+{{- if .Values.aiServices.llm.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-llm-models
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-service
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: {{ .Values.aiServices.llm.persistence.size | default "50Gi" }}
+  {{- if .Values.aiServices.llm.persistence.storageClass }}
+  storageClassName: {{ .Values.aiServices.llm.persistence.storageClass }}
+  {{- else if .Values.global.storageClass }}
+  storageClassName: {{ .Values.global.storageClass }}
+  {{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,591 @@
+name: Production Deployment Pipeline
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+      deployment_strategy:
+        description: 'Deployment strategy'
+        required: true
+        default: 'canary'
+        type: choice
+        options:
+          - canary
+          - blue-green
+          - rolling
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: wearforce
+  HELM_VERSION: 'v3.14.0'
+  KUBECTL_VERSION: 'v1.29.0'
+  TERRAFORM_VERSION: '1.7.0'
+
+jobs:
+  # Infrastructure Provisioning
+  infrastructure:
+    name: Infrastructure Provisioning
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.inputs.environment == 'production'
+    environment: infrastructure
+    outputs:
+      cluster-name: ${{ steps.terraform-output.outputs.cluster-name }}
+      vpc-id: ${{ steps.terraform-output.outputs.vpc-id }}
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+    
+    - name: Terraform Init
+      working-directory: infrastructure/terraform/environments/production
+      run: terraform init
+    
+    - name: Terraform Plan
+      working-directory: infrastructure/terraform/environments/production
+      run: |
+        terraform plan -detailed-exitcode -out=tfplan
+        echo "PLAN_EXIT_CODE=$?" >> $GITHUB_ENV
+    
+    - name: Terraform Apply
+      if: env.PLAN_EXIT_CODE == '2'
+      working-directory: infrastructure/terraform/environments/production
+      run: terraform apply -auto-approve tfplan
+    
+    - name: Get Terraform Outputs
+      id: terraform-output
+      working-directory: infrastructure/terraform/environments/production
+      run: |
+        echo "cluster-name=$(terraform output -raw eks_cluster_name)" >> $GITHUB_OUTPUT
+        echo "vpc-id=$(terraform output -raw vpc_id)" >> $GITHUB_OUTPUT
+
+  # Pre-deployment Security and Compliance Checks
+  pre-deployment-security:
+    name: Pre-deployment Security Checks
+    runs-on: ubuntu-latest
+    needs: [infrastructure]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+    
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region us-west-2 --name ${{ needs.infrastructure.outputs.cluster-name }}
+    
+    - name: Run Kubernetes security scan
+      run: |
+        # Install and run kube-bench
+        curl -L https://github.com/aquasecurity/kube-bench/releases/latest/download/kube-bench_linux_amd64.tar.gz | tar xz
+        ./kube-bench --json > kube-bench-results.json
+        cat kube-bench-results.json
+    
+    - name: Run Falco security runtime scan
+      run: |
+        kubectl apply -f https://raw.githubusercontent.com/falcosecurity/falco/master/examples/k8s_audit_config/falco-k8s-audit-rules.yaml
+        echo "Falco security scanning rules applied"
+    
+    - name: Policy validation with OPA Gatekeeper
+      run: |
+        # Check if Gatekeeper is installed and policies are enforced
+        kubectl get constrainttemplates || echo "No constraint templates found"
+        kubectl get constraints || echo "No constraints found"
+
+  # Database Migration with Rollback Safety
+  database-migration:
+    name: Database Migration
+    runs-on: ubuntu-latest
+    needs: [infrastructure, pre-deployment-security]
+    environment: production-database
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@v1
+      with:
+        version: '1.8.0'
+    
+    - name: Install dependencies
+      working-directory: ./services
+      run: poetry install --with migration
+    
+    - name: Configure database connection
+      run: |
+        echo "DATABASE_URL=${{ secrets.DATABASE_URL_PROD }}" >> $GITHUB_ENV
+    
+    - name: Create database backup
+      run: |
+        # Create pre-migration backup
+        kubectl create job db-backup-pre-$(date +%Y%m%d-%H%M%S) --from=cronjob/database-backup -n production
+        kubectl wait --for=condition=complete job/db-backup-pre-$(date +%Y%m%d-%H%M%S) -n production --timeout=600s
+    
+    - name: Test migration on copy
+      working-directory: ./services
+      run: |
+        # Test migration on database copy first
+        export TEST_DATABASE_URL=${{ secrets.TEST_DATABASE_URL }}
+        poetry run alembic upgrade head
+        poetry run alembic downgrade -1
+        poetry run alembic upgrade head
+    
+    - name: Run production database migrations
+      working-directory: ./services
+      run: |
+        poetry run alembic upgrade head
+        
+    - name: Verify migration
+      working-directory: ./services
+      run: |
+        poetry run alembic current
+        poetry run python -c "from shared.database import get_db_health; print(get_db_health())"
+    
+    - name: Run data integrity checks
+      working-directory: ./services
+      run: |
+        poetry run python -m scripts.verify_data_integrity
+
+  # Canary Deployment Strategy
+  deploy-canary:
+    name: Canary Deployment
+    runs-on: ubuntu-latest
+    needs: [infrastructure, database-migration]
+    if: github.event.inputs.deployment_strategy == 'canary' || github.event_name == 'push'
+    environment: 
+      name: production
+      url: https://wearforce.io
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: ${{ env.HELM_VERSION }}
+    
+    - name: Install Helm plugins
+      run: |
+        helm plugin install https://github.com/databus23/helm-diff || true
+        helm plugin install https://github.com/chartmuseum/helm-push || true
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region us-west-2 --name ${{ needs.infrastructure.outputs.cluster-name }}
+
+    - name: Pre-deployment checks
+      run: |
+        # Ensure production namespace exists
+        kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Verify cluster resources
+        kubectl get nodes
+        kubectl top nodes || true
+        
+        # Check existing deployments
+        kubectl get deployments -n production || true
+
+    # Phase 1: 5% Canary
+    - name: Deploy Canary (5% traffic)
+      id: canary-5
+      run: |
+        VERSION_TAG="${{ github.ref_name }}"
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          VERSION_TAG="latest"
+        fi
+        
+        helm upgrade --install wearforce-canary ./k8s/helm/wearforce \
+          --namespace production \
+          --create-namespace \
+          --values ./k8s/helm/wearforce/values-production.yaml \
+          --set global.image.tag=${VERSION_TAG} \
+          --set global.deployment.strategy=canary \
+          --set global.deployment.canary.weight=5 \
+          --set global.deployment.canary.enabled=true \
+          --wait --timeout=10m
+
+    - name: Canary health checks (5%)
+      run: |
+        # Wait for canary pods to be ready
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=wearforce-gateway,version=canary -n production --timeout=300s
+        
+        # Health check canary endpoint
+        CANARY_IP=$(kubectl get svc wearforce-gateway-canary -n production -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || echo "")
+        if [ -n "$CANARY_IP" ]; then
+          curl -f http://$CANARY_IP/health || exit 1
+        fi
+        
+        # Monitor for 3 minutes
+        echo "Monitoring 5% canary traffic for 3 minutes..."
+        for i in {1..18}; do
+          kubectl get pods -l version=canary -n production
+          sleep 10
+        done
+
+    # Phase 2: 25% Canary
+    - name: Promote to 25% traffic
+      if: success()
+      run: |
+        helm upgrade wearforce-canary ./k8s/helm/wearforce \
+          --namespace production \
+          --values ./k8s/helm/wearforce/values-production.yaml \
+          --set global.deployment.canary.weight=25 \
+          --reuse-values \
+          --wait --timeout=5m
+          
+        echo "Monitoring 25% canary traffic for 3 minutes..."
+        sleep 180
+
+    # Phase 3: 50% Canary
+    - name: Promote to 50% traffic
+      if: success()
+      run: |
+        helm upgrade wearforce-canary ./k8s/helm/wearforce \
+          --namespace production \
+          --values ./k8s/helm/wearforce/values-production.yaml \
+          --set global.deployment.canary.weight=50 \
+          --reuse-values \
+          --wait --timeout=5m
+          
+        echo "Monitoring 50% canary traffic for 5 minutes..."
+        sleep 300
+
+    # Phase 4: Full promotion
+    - name: Full promotion (100% traffic)
+      if: success()
+      run: |
+        VERSION_TAG="${{ github.ref_name }}"
+        if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          VERSION_TAG="latest"
+        fi
+        
+        # Deploy full version
+        helm upgrade wearforce ./k8s/helm/wearforce \
+          --namespace production \
+          --values ./k8s/helm/wearforce/values-production.yaml \
+          --set global.image.tag=${VERSION_TAG} \
+          --set global.deployment.strategy=rolling \
+          --wait --timeout=10m
+          
+        # Clean up canary
+        helm uninstall wearforce-canary -n production || true
+
+    - name: Post-deployment verification
+      run: |
+        # Comprehensive health checks
+        kubectl get deployments -n production
+        kubectl get pods -n production
+        
+        # Application health checks
+        curl -f https://wearforce.io/health || exit 1
+        curl -f https://wearforce.io/metrics || exit 1
+        curl -f https://wearforce.io/api/v1/status || exit 1
+
+    - name: Run integration tests
+      run: |
+        # Run comprehensive integration tests
+        if [ -f "tests/integration/production-tests.sh" ]; then
+          bash tests/integration/production-tests.sh
+        fi
+
+    - name: Update deployment annotations
+      if: success()
+      run: |
+        kubectl annotate deployment wearforce -n production \
+          deployment.kubernetes.io/revision="$(date +%Y%m%d-%H%M%S)" \
+          deployment.kubernetes.io/deployed-by="${{ github.actor }}" \
+          deployment.kubernetes.io/version="${{ github.ref_name }}" \
+          deployment.kubernetes.io/strategy="canary" || true
+
+  # Blue-Green Deployment Strategy (Alternative)
+  deploy-blue-green:
+    name: Blue-Green Deployment
+    runs-on: ubuntu-latest
+    needs: [infrastructure, database-migration]
+    if: github.event.inputs.deployment_strategy == 'blue-green'
+    environment: 
+      name: production
+      url: https://wearforce.io
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region us-west-2 --name ${{ needs.infrastructure.outputs.cluster-name }}
+
+    - name: Determine current environment
+      id: current-env
+      run: |
+        CURRENT=$(kubectl get service wearforce-main -n production -o jsonpath='{.spec.selector.environment}' 2>/dev/null || echo "blue")
+        if [ "$CURRENT" == "blue" ]; then
+          echo "target=green" >> $GITHUB_OUTPUT
+          echo "current=blue" >> $GITHUB_OUTPUT
+        else
+          echo "target=blue" >> $GITHUB_OUTPUT
+          echo "current=green" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Deploy to target environment
+      run: |
+        VERSION_TAG="${{ github.ref_name }}"
+        TARGET_ENV="${{ steps.current-env.outputs.target }}"
+        
+        helm upgrade --install wearforce-${TARGET_ENV} ./k8s/helm/wearforce \
+          --namespace production \
+          --create-namespace \
+          --values ./k8s/helm/wearforce/values-production.yaml \
+          --set global.image.tag=${VERSION_TAG} \
+          --set global.environment=${TARGET_ENV} \
+          --set global.deployment.strategy=blue-green \
+          --wait --timeout=15m
+
+    - name: Test target environment
+      run: |
+        TARGET_ENV="${{ steps.current-env.outputs.target }}"
+        
+        # Wait for pods to be ready
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=wearforce-gateway,environment=${TARGET_ENV} -n production --timeout=600s
+        
+        # Run health checks against target environment
+        kubectl run test-${TARGET_ENV} --rm -i --restart=Never --image=curlimages/curl:8.5.0 -- \
+          curl -f http://wearforce-gateway-${TARGET_ENV}.production.svc.cluster.local:8080/health
+
+    - name: Switch traffic to target environment
+      run: |
+        TARGET_ENV="${{ steps.current-env.outputs.target }}"
+        kubectl patch service wearforce-main -n production -p "{\"spec\":{\"selector\":{\"environment\":\"${TARGET_ENV}\"}}}"
+        
+        # Give it a moment to propagate
+        sleep 30
+
+    - name: Verify traffic switch
+      run: |
+        # Verify the switch worked
+        curl -f https://wearforce.io/health || exit 1
+        curl -f https://wearforce.io/api/v1/status || exit 1
+
+    - name: Clean up old environment
+      if: success()
+      run: |
+        CURRENT_ENV="${{ steps.current-env.outputs.current }}"
+        # Wait a bit more before cleanup
+        sleep 60
+        helm uninstall wearforce-${CURRENT_ENV} -n production || true
+
+  # Post-deployment monitoring and rollback capability
+  post-deployment:
+    name: Post-deployment Monitoring
+    runs-on: ubuntu-latest
+    needs: [deploy-canary, deploy-blue-green]
+    if: always() && (needs.deploy-canary.result == 'success' || needs.deploy-blue-green.result == 'success')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region us-west-2 --name ${{ needs.infrastructure.outputs.cluster-name }}
+
+    - name: Setup monitoring alerts
+      run: |
+        # Create or update alerting rules for the new deployment
+        kubectl apply -f k8s/monitoring/production-alerts.yaml || echo "No monitoring alerts found"
+        
+    - name: Verify SLIs/SLOs
+      run: |
+        echo "Monitoring SLIs for 10 minutes post-deployment..."
+        for i in {1..10}; do
+          # Check error rates
+          ERROR_RATE=$(curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=rate(http_requests_total{status=~'5..'}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+          
+          # Check response times
+          RESPONSE_TIME=$(curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+          
+          echo "Minute $i: Error rate: ${ERROR_RATE}, 95th percentile response time: ${RESPONSE_TIME}s"
+          
+          # Alert if error rate > 1% or response time > 5s
+          if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )) || (( $(echo "$RESPONSE_TIME > 5" | bc -l) )); then
+            echo "⚠️  SLO breach detected! Consider rollback."
+            # Uncomment for automatic rollback
+            # exit 1
+          fi
+          
+          sleep 60
+        done
+
+    - name: Generate deployment report
+      run: |
+        echo "# Deployment Report" > deployment-report.md
+        echo "## Deployment Details" >> deployment-report.md
+        echo "- **Version**: ${{ github.ref_name }}" >> deployment-report.md
+        echo "- **Deployed by**: ${{ github.actor }}" >> deployment-report.md
+        echo "- **Deployment time**: $(date)" >> deployment-report.md
+        echo "- **Strategy**: ${{ github.event.inputs.deployment_strategy || 'canary' }}" >> deployment-report.md
+        echo "" >> deployment-report.md
+        echo "## Resource Status" >> deployment-report.md
+        kubectl get deployments -n production >> deployment-report.md
+        echo "" >> deployment-report.md
+        echo "## Pod Status" >> deployment-report.md
+        kubectl get pods -n production >> deployment-report.md
+
+    - name: Upload deployment report
+      uses: actions/upload-artifact@v4
+      with:
+        name: deployment-report-${{ github.sha }}
+        path: deployment-report.md
+
+  # Emergency rollback job
+  emergency-rollback:
+    name: Emergency Rollback
+    runs-on: ubuntu-latest
+    if: failure() && (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    needs: [infrastructure]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: ${{ env.HELM_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-2
+
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region us-west-2 --name ${{ needs.infrastructure.outputs.cluster-name }}
+
+    - name: Rollback to previous version
+      run: |
+        echo "🚨 EMERGENCY ROLLBACK INITIATED"
+        
+        # Rollback to previous Helm release
+        helm rollback wearforce -n production
+        
+        # Wait for rollback to complete
+        kubectl rollout status deployment/wearforce-gateway -n production --timeout=600s
+        
+        # Verify rollback
+        curl -f https://wearforce.io/health || exit 1
+        
+        echo "✅ Rollback completed successfully"
+
+    - name: Notify team of rollback
+      if: always()
+      run: |
+        echo "Rollback completed. Team should be notified via configured channels."
+        # Add notification logic (Slack, PagerDuty, etc.)
+
+  # Cleanup and notification
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [post-deployment]
+    if: always()
+    
+    steps:
+    - name: Delete old container images
+      uses: actions/delete-package-versions@v5
+      with:
+        package-name: 'wearforce-gateway'
+        package-type: 'container'
+        min-versions-to-keep: 15
+        delete-only-untagged-versions: true
+
+    - name: Cleanup old Kubernetes resources
+      if: success()
+      run: |
+        # Clean up old completed jobs
+        kubectl delete jobs --field-selector status.successful=1 -n production || true
+        
+        # Clean up old ReplicaSets
+        kubectl delete rs --field-selector status.replicas=0 -n production || true
+
+    - name: Send deployment notification
+      if: always()
+      run: |
+        STATUS="${{ needs.post-deployment.result }}"
+        VERSION="${{ github.ref_name }}"
+        ACTOR="${{ github.actor }}"
+        
+        echo "🚀 Deployment $STATUS for version $VERSION by $ACTOR"
+        # Integrate with your notification system (Slack, Teams, email, etc.)

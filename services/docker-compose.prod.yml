@@ -1,0 +1,223 @@
+version: '3.8'
+
+# Production override for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+  # Application Services - Production Configuration
+  graphql-gateway:
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  crm-service:
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  erp-service:
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  notification-service:
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  # Infrastructure Services - Production Configuration
+  postgres:
+    environment:
+      - POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:Z
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    restart: always
+
+  redis:
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+    restart: always
+
+  nats:
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+    restart: always
+
+  # Workers - Production Configuration
+  crm-worker:
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+    restart: always
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+
+  erp-worker:
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+    restart: always
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+
+  notification-worker:
+    environment:
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+    restart: always
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+
+  # Remove development tools in production
+  pgadmin:
+    profiles:
+      - dev
+
+  redis-commander:
+    profiles:
+      - dev
+
+  rq-dashboard:
+    profiles:
+      - dev
+
+  # Production monitoring and logging
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: wearforce-clean_clean_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - wearforce-clean_clean_network
+    restart: always
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: wearforce-clean_clean_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - wearforce-clean_clean_network
+    restart: always
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: wearforce-clean_clean_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - graphql-gateway
+      - crm-service
+      - erp-service
+      - notification-service
+    networks:
+      - wearforce-clean_clean_network
+    restart: always
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+secrets:
+  postgres_password:
+    external: true

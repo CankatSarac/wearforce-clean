@@ -1,0 +1,67 @@
+version: '3.8'
+
+# Development override for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  # Application Services - Development Configuration
+  graphql-gateway:
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=true
+      - AUTO_RELOAD=true
+    command: ["python", "-m", "uvicorn", "graphql.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  crm-service:
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=true
+      - AUTO_RELOAD=true
+    command: ["python", "-m", "uvicorn", "crm.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+
+  erp-service:
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=true
+      - AUTO_RELOAD=true
+    command: ["python", "-m", "uvicorn", "erp.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+
+  notification-service:
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=true
+      - AUTO_RELOAD=true
+    command: ["python", "-m", "uvicorn", "notification.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
+
+  # Workers with code mounting for development
+  crm-worker:
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=true
+
+  erp-worker:
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=true
+
+  notification-worker:
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=true
+
+  # Development Tools
+  mailhog:
+    image: mailhog/mailhog
+    container_name: wearforce-clean_clean_mailhog
+    ports:
+      - "1025:1025"  # SMTP port
+      - "8025:8025"  # Web UI port
+    networks:
+      - wearforce-clean_clean_network

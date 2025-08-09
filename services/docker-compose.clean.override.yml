@@ -1,0 +1,156 @@
+version: '3.8'
+
+# WearForce-Clean Port Override Configuration
+# This file modifies ports to avoid conflicts with the original WearForce project
+
+services:
+  # Database Services - Modified Ports
+  postgres:
+    ports:
+      - "5532:5432"  # Changed from 5432 to 5532
+    container_name: wearforce-clean_postgres_custom
+    environment:
+      POSTGRES_DB: wearforce-clean_clean
+      POSTGRES_USER: wearforce-clean_clean
+      POSTGRES_PASSWORD: wearforce-clean_clean_password
+      POSTGRES_MULTIPLE_DATABASES: wearforce-clean_clean_crm,wearforce-clean_clean_erp,wearforce-clean_clean_notification
+    
+  redis:
+    ports:
+      - "6479:6379"  # Changed from 6379 to 6479
+    container_name: wearforce-clean_redis_custom
+    
+  nats:
+    ports:
+      - "4322:4222"  # Changed from 4222 to 4322
+      - "8322:8222"  # Changed from 8222 to 8322
+    container_name: wearforce-clean_nats_custom
+
+  # Application Services - Modified Ports
+  graphql-gateway:
+    ports:
+      - "9000:8000"  # Changed from 8000 to 9000
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean
+      - REDIS_URL=redis://redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - CRM_SERVICE_URL=http://crm-service:8001
+      - ERP_SERVICE_URL=http://erp-service:8002
+      - NOTIFICATION_SERVICE_URL=http://notification-service:8003
+      - JWT_SECRET_KEY=wearforce-clean-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      
+  crm-service:
+    ports:
+      - "9001:8001"  # Changed from 8001 to 9001
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_crm
+      - REDIS_URL=redis://redis:6379/1
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=wearforce-clean-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      
+  erp-service:
+    ports:
+      - "9002:8002"  # Changed from 8002 to 9002
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_erp
+      - REDIS_URL=redis://redis:6379/2
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=wearforce-clean-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      
+  notification-service:
+    ports:
+      - "9003:8003"  # Changed from 8003 to 9003
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_notification
+      - REDIS_URL=redis://redis:6379/3
+      - NATS_URL=nats://nats:4222
+      - JWT_SECRET_KEY=wearforce-clean-super-secret-jwt-key-change-in-production
+      - JWT_ALGORITHM=HS256
+      - JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
+      # Email configuration
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USE_TLS=true
+      - SMTP_USERNAME=your-email@gmail.com
+      - SMTP_PASSWORD=your-app-password
+      # SMS configuration (Twilio)
+      - TWILIO_ACCOUNT_SID=your-twilio-sid
+      - TWILIO_AUTH_TOKEN=your-twilio-token
+      - TWILIO_FROM_PHONE=+1234567890
+      # Push notification configuration (Firebase)
+      - FIREBASE_CREDENTIALS_PATH=/app/firebase-credentials.json
+
+  # Background Task Workers - Modified Environment
+  crm-worker:
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_crm
+      - REDIS_URL=redis://redis:6379/1
+      - NATS_URL=nats://nats:4222
+      
+  erp-worker:
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_erp
+      - REDIS_URL=redis://redis:6379/2
+      - NATS_URL=nats://nats:4222
+      
+  notification-worker:
+    environment:
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://wearforce-clean_clean:wearforce-clean_clean_password@postgres:5432/wearforce-clean_clean_notification
+      - REDIS_URL=redis://redis:6379/3
+      - NATS_URL=nats://nats:4222
+      # Same notification environment variables as the service
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USE_TLS=true
+      - SMTP_USERNAME=your-email@gmail.com
+      - SMTP_PASSWORD=your-app-password
+      - TWILIO_ACCOUNT_SID=your-twilio-sid
+      - TWILIO_AUTH_TOKEN=your-twilio-token
+      - TWILIO_FROM_PHONE=+1234567890
+      - FIREBASE_CREDENTIALS_PATH=/app/firebase-credentials.json
+
+  # Monitoring and Management - Modified Ports
+  pgadmin:
+    ports:
+      - "5150:80"  # Changed from 5050 to 5150
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@wearforce-clean.com
+      PGADMIN_DEFAULT_PASSWORD: admin_password
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      
+  redis-commander:
+    ports:
+      - "8181:8081"  # Changed from 8081 to 8181
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+      
+  rq-dashboard:
+    ports:
+      - "9281:9181"  # Changed from 9181 to 9281
+    environment:
+      - RQ_DASHBOARD_REDIS_URL=redis://redis:6379
+
+  # Development Tools
+  mailhog:
+    ports:
+      - "1125:1025"  # SMTP port - changed from 1025 to 1125
+      - "8125:8025"  # Web UI port - changed from 8025 to 8125
+    container_name: wearforce-clean_clean_mailhog_custom
+
+# Use the same network as defined in the base docker-compose.yml
+networks:
+  wearforce-clean_clean_network:
+    external: true

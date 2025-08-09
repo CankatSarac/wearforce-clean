@@ -1,0 +1,38 @@
+services:
+  authz:
+    url: http://localhost:8181
+  wearforce-gateway:
+    url: http://gateway:8080
+
+bundles:
+  authz:
+    resource: "/v1/bundles/wearforce"
+    persist: true
+    polling:
+      min_delay_seconds: 10
+      max_delay_seconds: 20
+
+decision_logs:
+  console: true
+  reporting:
+    min_delay_seconds: 5
+    max_delay_seconds: 10
+
+status:
+  console: true
+  prometheus: true
+
+plugins:
+  envoy_ext_authz_grpc:
+    addr: :9191
+    query: data.envoy.authz.allow
+    dry-run: false
+    enable_reflection: true
+
+keys:
+  global_key:
+    algorithm: RS256
+    key: |
+      -----BEGIN PRIVATE KEY-----
+      [Generated key would be here in production]
+      -----END PRIVATE KEY-----

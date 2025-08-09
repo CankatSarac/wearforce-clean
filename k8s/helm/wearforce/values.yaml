@@ -1,0 +1,515 @@
+# Global configuration
+global:
+  # Image registry and repository settings
+  image:
+    registry: ghcr.io
+    repository: wearforce-clean/wearforce-clean
+    tag: latest
+    pullPolicy: Always
+    pullSecrets: []
+
+  # Environment configuration
+  environment: development
+  
+  # Service mesh configuration
+  serviceMesh:
+    enabled: true
+    type: istio # istio, linkerd, or consul
+  
+  # Storage class for persistent volumes
+  storageClass: gp2
+
+  # Domain configuration
+  domain: wearforce-clean.local
+  
+  # TLS configuration
+  tls:
+    enabled: true
+    issuer: letsencrypt-prod
+
+# Gateway service configuration
+gateway:
+  enabled: true
+  replicaCount: 3
+  
+  image:
+    repository: gateway
+    tag: ""
+    
+  service:
+    type: ClusterIP
+    http:
+      port: 8080
+      targetPort: 8080
+    grpc:
+      port: 8081
+      targetPort: 8081
+    metrics:
+      port: 9090
+      targetPort: 9090
+      
+  # Resource specifications
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+      
+  # Horizontal Pod Autoscaler
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+    
+  # Health checks
+  healthcheck:
+    enabled: true
+    path: /health
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    
+  # Environment variables
+  env:
+    LOG_LEVEL: info
+    GATEWAY_REDIS_ADDRESS: "{{ .Release.Name }}-redis-master:6379"
+    GATEWAY_TRACING_ENABLED: "true"
+    GATEWAY_METRICS_ENABLED: "true"
+
+# AI Services configuration
+aiServices:
+  # LLM Service
+  llm:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: llm-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8004
+      targetPort: 8004
+      
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 16Gi
+        nvidia.com/gpu: 1
+      requests:
+        cpu: 2000m
+        memory: 8Gi
+        nvidia.com/gpu: 1
+        
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 4
+      targetCPUUtilizationPercentage: 70
+      
+    env:
+      TENSOR_PARALLEL_SIZE: "1"
+      MAX_NUM_SEQS: "256"
+      MAX_MODEL_LEN: "4096"
+      BATCH_SIZE: "32"
+
+  # NLU Service  
+  nlu:
+    enabled: true
+    replicaCount: 3
+    
+    image:
+      repository: nlu-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8003
+      targetPort: 8003
+      
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+        
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+
+  # RAG Service
+  rag:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: rag-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8005
+      targetPort: 8005
+      
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+        
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+      
+    env:
+      CHUNK_SIZE: "512"
+      CHUNK_OVERLAP: "50"
+      TOP_K: "5"
+      SIMILARITY_THRESHOLD: "0.7"
+
+  # STT Service
+  stt:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: stt-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8006
+      targetPort: 8006
+      
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+
+  # TTS Service
+  tts:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: tts-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8007
+      targetPort: 8007
+      
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# Business Services configuration
+businessServices:
+  # GraphQL Gateway
+  graphql:
+    enabled: true
+    replicaCount: 3
+    
+    image:
+      repository: graphql-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8000
+      targetPort: 8000
+      
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+        
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+
+  # CRM Service
+  crm:
+    enabled: true
+    replicaCount: 3
+    
+    image:
+      repository: crm-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8001
+      targetPort: 8001
+      
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+        
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+
+  # ERP Service
+  erp:
+    enabled: true
+    replicaCount: 3
+    
+    image:
+      repository: erp-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8002
+      targetPort: 8002
+      
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+        
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 8
+      targetCPUUtilizationPercentage: 70
+
+  # Notification Service
+  notification:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: notification-service
+      tag: ""
+      
+    service:
+      type: ClusterIP
+      port: 8003
+      targetPort: 8003
+      
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+        
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+
+# Infrastructure Services
+infrastructure:
+  # PostgreSQL configuration
+  postgresql:
+    enabled: true
+    auth:
+      enablePostgresUser: true
+      postgresPassword: ""
+      username: wearforce-clean
+      password: ""
+      database: wearforce-clean
+    architecture: replication
+    primary:
+      persistence:
+        enabled: true
+        size: 100Gi
+        storageClass: gp2
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+    readReplicas:
+      replicaCount: 2
+      persistence:
+        enabled: true
+        size: 100Gi
+        storageClass: gp2
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+        requests:
+          cpu: 250m
+          memory: 512Mi
+
+  # Redis configuration
+  redis:
+    enabled: true
+    architecture: replication
+    auth:
+      enabled: true
+      password: ""
+    master:
+      persistence:
+        enabled: true
+        size: 20Gi
+        storageClass: gp2
+      resources:
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+        requests:
+          cpu: 250m
+          memory: 512Mi
+    replica:
+      replicaCount: 2
+      persistence:
+        enabled: true
+        size: 20Gi
+        storageClass: gp2
+
+  # Qdrant Vector Database
+  qdrant:
+    enabled: true
+    replicaCount: 2
+    
+    image:
+      repository: qdrant/qdrant
+      tag: "v1.7.4"
+      
+    service:
+      type: ClusterIP
+      port: 6333
+      targetPort: 6333
+      
+    persistence:
+      enabled: true
+      size: 50Gi
+      storageClass: gp2
+      
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: "{{ .Values.global.domain }}"
+      paths:
+        - path: /
+          pathType: Prefix
+          service: gateway
+          port: 8080
+        - path: /api/graphql
+          pathType: Prefix
+          service: graphql
+          port: 8000
+  tls:
+    - secretName: wearforce-clean-tls
+      hosts:
+        - "{{ .Values.global.domain }}"
+
+# Monitoring configuration
+monitoring:
+  prometheus:
+    enabled: true
+    server:
+      persistentVolume:
+        enabled: true
+        size: 50Gi
+        storageClass: gp2
+      resources:
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+          
+  grafana:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClass: gp2
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+        
+  jaeger:
+    enabled: true
+    storage:
+      type: elasticsearch
+      elasticsearch:
+        host: elasticsearch
+        port: 9200
+
+# Security configuration
+security:
+  podSecurityPolicy:
+    enabled: true
+  networkPolicy:
+    enabled: true
+  rbac:
+    create: true
+  serviceAccount:
+    create: true
+    annotations: {}
+
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: "30d"
+  s3:
+    bucket: wearforce-clean-backups
+    region: us-west-2

@@ -1,0 +1,312 @@
+# Prometheus Operator Production Configuration
+fullnameOverride: prometheus-operator
+
+# Prometheus configuration
+prometheus:
+  prometheusSpec:
+    # Resource allocation
+    resources:
+      requests:
+        memory: 2Gi
+        cpu: 1000m
+      limits:
+        memory: 8Gi
+        cpu: 4000m
+    
+    # Storage configuration
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 100Gi
+    
+    # Data retention
+    retention: 30d
+    retentionSize: 90GiB
+    
+    # WAL compression
+    walCompression: true
+    
+    # High availability
+    replicas: 2
+    
+    # Security
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 2000
+    
+    # Service monitor configuration
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector:
+      matchLabels:
+        prometheus: kube-prometheus
+    
+    # Rule selector configuration
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector:
+      matchLabels:
+        prometheus: kube-prometheus
+    
+    # Scrape configuration
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    
+    # External labels
+    externalLabels:
+      cluster: wearforce-clean-production
+      environment: production
+    
+    # Remote write configuration (for long-term storage)
+    remoteWrite:
+      - url: "https://prometheus-remote-storage.wearforce-clean.io/api/v1/write"
+        writeRelabelConfigs:
+        - sourceLabels: [__name__]
+          regex: "wearforce-clean_.*|http_.*|grpc_.*|up|node_.*|container_.*"
+          action: keep
+    
+    # Additional scrape configs
+    additionalScrapeConfigs:
+    - job_name: 'wearforce-clean-gateway'
+      static_configs:
+      - targets: ['wearforce-clean-gateway:9090']
+      scrape_interval: 15s
+      metrics_path: /metrics
+      relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+)(:.+)?'
+        replacement: '${1}'
+    
+    - job_name: 'wearforce-clean-ai-services'
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names: ["production"]
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+    
+    - job_name: 'nvidia-gpu-metrics'
+      static_configs:
+      - targets: ['dcgm-exporter:9400']
+      scrape_interval: 30s
+
+# Alertmanager configuration
+alertmanager:
+  alertmanagerSpec:
+    # Resource allocation
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 100m
+      limits:
+        memory: 1Gi
+        cpu: 500m
+    
+    # Storage configuration
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+    
+    # High availability
+    replicas: 3
+    
+    # Configuration
+    configSecret: alertmanager-config
+    
+    # External URL
+    externalUrl: "https://alertmanager.wearforce-clean.io"
+
+# Grafana configuration
+grafana:
+  enabled: false  # We'll deploy Grafana separately for better control
+  
+# Node Exporter configuration
+nodeExporter:
+  enabled: true
+  
+# Kube State Metrics configuration
+kubeStateMetrics:
+  enabled: true
+  
+# CoreDNS monitoring
+coreDns:
+  enabled: true
+  
+# Kubelet monitoring
+kubelet:
+  enabled: true
+  serviceMonitor:
+    resource: true
+    resourcePath: "/metrics/resource"
+    cAdvisor: true
+    cAdvisorMetricRelabelings:
+    # Drop container metrics with no image name
+    - sourceLabels: [__name__, image]
+      regex: container_.*;<none>
+      action: drop
+    # Drop high cardinality metrics
+    - sourceLabels: [__name__]
+      regex: container_(network_tcp_usage_total|network_udp_usage_total|tasks_state|cpu_load_average_10s)
+      action: drop
+
+# Kube API Server monitoring
+kubeApiServer:
+  enabled: true
+
+# Kube Controller Manager monitoring
+kubeControllerManager:
+  enabled: true
+
+# Kube Scheduler monitoring
+kubeScheduler:
+  enabled: true
+
+# ETCD monitoring
+kubeEtcd:
+  enabled: true
+
+# Kube Proxy monitoring
+kubeProxy:
+  enabled: true
+
+# Default rules
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: true
+    general: true
+    k8s: true
+    kubeApiserver: true
+    kubeApiserverAvailability: true
+    kubeApiserverBurnrate: true
+    kubeApiserverHistogram: true
+    kubeApiserverSlos: true
+    kubeControllerManager: true
+    kubelet: true
+    kubeProxy: true
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeScheduler: true
+    kubeStateMetrics: true
+    network: true
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: true
+
+# Additional components
+additionalPrometheusRulesMap:
+  wearforce-clean-rules:
+    groups:
+    - name: wearforce-clean.rules
+      rules:
+      # SLI: Request rate
+      - record: wearforce-clean:http_requests_per_second
+        expr: sum(rate(http_requests_total[5m])) by (service, method, status_code)
+      
+      # SLI: Error rate
+      - record: wearforce-clean:http_error_rate
+        expr: sum(rate(http_requests_total{status_code=~"5.."}[5m])) by (service) / sum(rate(http_requests_total[5m])) by (service)
+      
+      # SLI: Response time
+      - record: wearforce-clean:http_request_duration_99p
+        expr: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (service, le))
+      
+      # SLI: Availability
+      - record: wearforce-clean:service_availability
+        expr: avg_over_time(up[5m])
+        
+      # AI Service specific metrics
+      - record: wearforce-clean:llm_tokens_per_second
+        expr: sum(rate(llm_tokens_generated_total[5m])) by (model)
+        
+      - record: wearforce-clean:gpu_utilization_avg
+        expr: avg(DCGM_FI_DEV_GPU_UTIL) by (gpu, instance)
+        
+    - name: wearforce-clean.alerts
+      rules:
+      # High error rate alert
+      - alert: HighErrorRate
+        expr: wearforce-clean:http_error_rate > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "Service {{ $labels.service }} has error rate of {{ $value | humanizePercentage }}"
+      
+      # High response time alert
+      - alert: HighResponseTime
+        expr: wearforce-clean:http_request_duration_99p > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High response time detected"
+          description: "Service {{ $labels.service }} 99th percentile response time is {{ $value }}s"
+      
+      # Service down alert
+      - alert: ServiceDown
+        expr: wearforce-clean:service_availability < 0.95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service availability low"
+          description: "Service availability is {{ $value | humanizePercentage }}"
+      
+      # GPU utilization alert
+      - alert: LowGPUUtilization
+        expr: wearforce-clean:gpu_utilization_avg < 30
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Low GPU utilization"
+          description: "GPU {{ $labels.gpu }} utilization is only {{ $value }}%"
+      
+      # High GPU utilization alert
+      - alert: HighGPUUtilization
+        expr: wearforce-clean:gpu_utilization_avg > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High GPU utilization"
+          description: "GPU {{ $labels.gpu }} utilization is {{ $value }}%"
+
+# Global configuration
+global:
+  # Image registry
+  imageRegistry: quay.io
+  
+  # Security
+  rbac:
+    create: true
+    pspEnabled: false
+  
+  # Service monitor configuration
+  serviceMonitor:
+    labels:
+      prometheus: kube-prometheus

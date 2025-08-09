@@ -1,0 +1,202 @@
+syntax = "proto3";
+
+package wearforce.gateway.v1;
+
+option go_package = "github.com/wearforce/gateway/pkg/proto";
+
+import "google/protobuf/timestamp.proto";
+
+// ChatService provides real-time chat functionality
+service ChatService {
+    // JoinChat joins a chat room
+    rpc JoinChat(JoinChatRequest) returns (JoinChatResponse);
+    
+    // LeaveChat leaves a chat room
+    rpc LeaveChat(LeaveChatRequest) returns (LeaveChatResponse);
+    
+    // SendMessage sends a message to a chat room
+    rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+    
+    // StreamMessages streams messages from a chat room
+    rpc StreamMessages(StreamMessagesRequest) returns (stream ChatMessage);
+    
+    // GetChatHistory retrieves chat history
+    rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
+    
+    // GetActiveUsers gets list of active users in a chat room
+    rpc GetActiveUsers(GetActiveUsersRequest) returns (GetActiveUsersResponse);
+}
+
+message JoinChatRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string user_name = 3;
+    map<string, string> metadata = 4;
+}
+
+message JoinChatResponse {
+    bool success = 1;
+    string session_id = 2;
+    string error_message = 3;
+    repeated ChatUser active_users = 4;
+}
+
+message LeaveChatRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string session_id = 3;
+}
+
+message LeaveChatResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+message SendMessageRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string session_id = 3;
+    MessageContent content = 4;
+    repeated string mentions = 5;
+    string reply_to_message_id = 6;
+}
+
+message SendMessageResponse {
+    bool success = 1;
+    string message_id = 2;
+    string error_message = 3;
+    google.protobuf.Timestamp timestamp = 4;
+}
+
+message StreamMessagesRequest {
+    string room_id = 1;
+    string user_id = 2;
+    string session_id = 3;
+    google.protobuf.Timestamp since = 4;
+}
+
+message GetChatHistoryRequest {
+    string room_id = 1;
+    string user_id = 2;
+    int32 limit = 3;
+    string cursor = 4;
+    google.protobuf.Timestamp before = 5;
+    google.protobuf.Timestamp after = 6;
+}
+
+message GetChatHistoryResponse {
+    repeated ChatMessage messages = 1;
+    string next_cursor = 2;
+    bool has_more = 3;
+}
+
+message GetActiveUsersRequest {
+    string room_id = 1;
+    string user_id = 2;
+}
+
+message GetActiveUsersResponse {
+    repeated ChatUser users = 1;
+    int32 total_count = 2;
+}
+
+message ChatMessage {
+    string message_id = 1;
+    string room_id = 2;
+    string user_id = 3;
+    string user_name = 4;
+    MessageContent content = 5;
+    google.protobuf.Timestamp timestamp = 6;
+    repeated string mentions = 7;
+    string reply_to_message_id = 8;
+    bool is_edited = 9;
+    google.protobuf.Timestamp edited_at = 10;
+    map<string, string> metadata = 11;
+    MessageStatus status = 12;
+}
+
+message MessageContent {
+    enum ContentType {
+        TEXT = 0;
+        IMAGE = 1;
+        AUDIO = 2;
+        VIDEO = 3;
+        FILE = 4;
+        LOCATION = 5;
+        SYSTEM = 6;
+    }
+    
+    ContentType type = 1;
+    string text = 2;
+    MediaContent media = 3;
+    LocationContent location = 4;
+    SystemContent system = 5;
+}
+
+message MediaContent {
+    string url = 1;
+    string thumbnail_url = 2;
+    string filename = 3;
+    int64 file_size = 4;
+    string mime_type = 5;
+    int32 duration_seconds = 6; // For audio/video
+    int32 width = 7;  // For images/video
+    int32 height = 8; // For images/video
+}
+
+message LocationContent {
+    double latitude = 1;
+    double longitude = 2;
+    string address = 3;
+    string place_name = 4;
+}
+
+message SystemContent {
+    enum SystemMessageType {
+        USER_JOINED = 0;
+        USER_LEFT = 1;
+        USER_PROMOTED = 2;
+        USER_DEMOTED = 3;
+        ROOM_CREATED = 4;
+        ROOM_UPDATED = 5;
+    }
+    
+    SystemMessageType type = 1;
+    string actor_user_id = 2;
+    string target_user_id = 3;
+    string details = 4;
+}
+
+message ChatUser {
+    string user_id = 1;
+    string user_name = 2;
+    string display_name = 3;
+    string avatar_url = 4;
+    UserStatus status = 5;
+    google.protobuf.Timestamp last_seen = 6;
+    UserRole role = 7;
+    map<string, string> metadata = 8;
+}
+
+enum UserStatus {
+    OFFLINE = 0;
+    ONLINE = 1;
+    AWAY = 2;
+    BUSY = 3;
+    INVISIBLE = 4;
+}
+
+enum UserRole {
+    MEMBER = 0;
+    MODERATOR = 1;
+    ADMIN = 2;
+    OWNER = 3;
+}
+
+enum MessageStatus {
+    PENDING = 0;
+    SENT = 1;
+    DELIVERED = 2;
+    READ = 3;
+    FAILED = 4;
+}

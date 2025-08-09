@@ -1,0 +1,435 @@
+{{- if .Values.ingress.enabled }}
+# Nginx Ingress Controller Configuration
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+  annotations:
+    # Basic Nginx configurations
+    nginx.ingress.kubernetes.io/ssl-redirect: {{ .Values.ingress.annotations."nginx.ingress.kubernetes.io/ssl-redirect" | quote }}
+    nginx.ingress.kubernetes.io/use-regex: {{ .Values.ingress.annotations."nginx.ingress.kubernetes.io/use-regex" | quote }}
+    
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "Content-Security-Policy: default-src 'self'";
+    
+    # Rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: {{ .Values.ingress.annotations."nginx.ingress.kubernetes.io/rate-limit" | default "100" | quote }}
+    nginx.ingress.kubernetes.io/rate-limit-burst-multiplier: {{ .Values.ingress.annotations."nginx.ingress.kubernetes.io/rate-limit-burst-multiplier" | default "2" | quote }}
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    
+    # Connection limits
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    
+    # Timeout configurations
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60" 
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    
+    # Load balancing
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$remote_addr"
+    nginx.ingress.kubernetes.io/load-balance: "ewma"
+    
+    # Enable session affinity for WebSocket connections
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "wearforce-clean-affinity"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+    
+    # WebSocket support
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/server-snippets: |
+      location ~* /ws/ {
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+      }
+    
+    # Monitoring and observability
+    nginx.ingress.kubernetes.io/enable-access-log: "true"
+    nginx.ingress.kubernetes.io/enable-rewrite-log: "false"
+    
+    # Custom error pages
+    nginx.ingress.kubernetes.io/custom-http-errors: "404,500,502,503,504"
+    nginx.ingress.kubernetes.io/default-backend: {{ include "wearforce-clean.fullname" . }}-error-pages
+    
+    {{- if .Values.global.tls.enabled }}
+    # TLS/Certificate management
+    cert-manager.io/cluster-issuer: {{ .Values.global.tls.issuer | quote }}
+    cert-manager.io/acme-challenge-type: http01
+    {{- end }}
+    
+    {{- with .Values.ingress.annotations }}
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+    {{- end }}
+
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  
+  {{- if and .Values.global.tls.enabled .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+        # Main application routes
+        {{- range .paths }}
+        - path: {{ .path }}
+          pathType: {{ .pathType }}
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-{{ .service }}
+              port:
+                number: {{ .port }}
+        {{- end }}
+        
+        # Health check endpoints
+        - path: /health
+          pathType: Exact
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-gateway
+              port:
+                number: {{ $.Values.gateway.service.http.port }}
+        
+        # Metrics endpoints (protected)
+        - path: /metrics
+          pathType: Exact
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-gateway
+              port:
+                number: {{ $.Values.gateway.service.metrics.port }}
+        
+        # WebSocket connections
+        - path: /ws
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-gateway
+              port:
+                number: {{ $.Values.gateway.service.http.port }}
+        
+        # API routes with specific routing
+        - path: /api/v1/ai/(llm|chat)
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-llm
+              port:
+                number: {{ $.Values.aiServices.llm.service.port }}
+        
+        - path: /api/v1/ai/nlu
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-nlu
+              port:
+                number: {{ $.Values.aiServices.nlu.service.port }}
+        
+        - path: /api/v1/ai/rag
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-rag
+              port:
+                number: {{ $.Values.aiServices.rag.service.port }}
+        
+        - path: /api/v1/ai/stt
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-stt
+              port:
+                number: {{ $.Values.aiServices.stt.service.port }}
+        
+        - path: /api/v1/ai/tts
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-tts
+              port:
+                number: {{ $.Values.aiServices.tts.service.port }}
+        
+        # Business service routes
+        - path: /api/v1/crm
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-crm
+              port:
+                number: {{ $.Values.businessServices.crm.service.port }}
+        
+        - path: /api/v1/erp
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-erp
+              port:
+                number: {{ $.Values.businessServices.erp.service.port }}
+        
+        - path: /api/v1/notifications
+          pathType: Prefix
+          backend:
+            service:
+              name: {{ include "wearforce-clean.fullname" $ }}-notification
+              port:
+                number: {{ $.Values.businessServices.notification.service.port }}
+    {{- end }}
+
+---
+# Error pages service for custom error handling
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-error-pages
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: error-pages
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      {{- include "wearforce-clean.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: error-pages
+  template:
+    metadata:
+      labels:
+        {{- include "wearforce-clean.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: error-pages
+    spec:
+      containers:
+      - name: error-pages
+        image: nginxinc/nginx-unprivileged:1.25-alpine
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: error-pages
+          mountPath: /usr/share/nginx/html
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+      volumes:
+      - name: error-pages
+        configMap:
+          name: {{ include "wearforce-clean.fullname" . }}-error-pages
+      - name: nginx-config
+        configMap:
+          name: {{ include "wearforce-clean.fullname" . }}-error-pages-nginx
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-error-pages
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: error-pages
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    {{- include "wearforce-clean.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: error-pages
+
+---
+# Error pages content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-error-pages
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: error-pages
+data:
+  404.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Page Not Found - WearForce</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #e74c3c; font-size: 72px; margin: 0; }
+            h2 { color: #34495e; margin-top: 20px; }
+            p { color: #7f8c8d; line-height: 1.6; }
+            .btn { display: inline-block; padding: 12px 24px; background: #3498db; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+            .btn:hover { background: #2980b9; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>404</h1>
+            <h2>Page Not Found</h2>
+            <p>The page you are looking for doesn't exist or has been moved.</p>
+            <a href="/" class="btn">Go Home</a>
+        </div>
+    </body>
+    </html>
+
+  500.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Internal Server Error - WearForce</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #e74c3c; font-size: 72px; margin: 0; }
+            h2 { color: #34495e; margin-top: 20px; }
+            p { color: #7f8c8d; line-height: 1.6; }
+            .btn { display: inline-block; padding: 12px 24px; background: #3498db; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+            .btn:hover { background: #2980b9; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>500</h1>
+            <h2>Internal Server Error</h2>
+            <p>Something went wrong on our end. We're working to fix it.</p>
+            <a href="/" class="btn">Go Home</a>
+        </div>
+    </body>
+    </html>
+
+  502.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Bad Gateway - WearForce</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #e74c3c; font-size: 72px; margin: 0; }
+            h2 { color: #34495e; margin-top: 20px; }
+            p { color: #7f8c8d; line-height: 1.6; }
+            .btn { display: inline-block; padding: 12px 24px; background: #3498db; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+            .btn:hover { background: #2980b9; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>502</h1>
+            <h2>Bad Gateway</h2>
+            <p>The service is temporarily unavailable. Please try again in a few moments.</p>
+            <a href="/" class="btn">Go Home</a>
+        </div>
+    </body>
+    </html>
+
+  503.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Service Unavailable - WearForce</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #e74c3c; font-size: 72px; margin: 0; }
+            h2 { color: #34495e; margin-top: 20px; }
+            p { color: #7f8c8d; line-height: 1.6; }
+            .btn { display: inline-block; padding: 12px 24px; background: #3498db; color: white; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+            .btn:hover { background: #2980b9; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>503</h1>
+            <h2>Service Unavailable</h2>
+            <p>We're currently performing maintenance. Please check back soon.</p>
+            <a href="/" class="btn">Go Home</a>
+        </div>
+    </body>
+    </html>
+
+---
+# Nginx config for error pages
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wearforce-clean.fullname" . }}-error-pages-nginx
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wearforce-clean.labels" . | nindent 4 }}
+    app.kubernetes.io/component: error-pages
+data:
+  nginx.conf: |
+    worker_processes 1;
+    error_log /dev/stderr warn;
+    pid /tmp/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+        
+        access_log /dev/stdout main;
+        
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        
+        server {
+            listen 8080;
+            server_name _;
+            root /usr/share/nginx/html;
+            
+            location / {
+                try_files $uri $uri.html =404;
+            }
+        }
+    }
+{{- end }}

@@ -1,0 +1,47 @@
+apiVersion: v2
+name: wearforce-clean
+description: A comprehensive Helm chart for WearForce-Clean microservices platform
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - wearforce-clean
+  - microservices
+  - ai
+  - crm
+  - erp
+
+home: https://github.com/wearforce-clean/wearforce-clean
+sources:
+  - https://github.com/wearforce-clean/wearforce-clean
+
+maintainers:
+  - name: WearForce-Clean Team
+    email: platform@wearforce-clean.io
+
+dependencies:
+  - name: postgresql
+    version: "15.2.5"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "19.0.2" 
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled
+  - name: prometheus
+    version: "25.8.0"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: monitoring.prometheus.enabled
+  - name: grafana
+    version: "7.3.7"
+    repository: https://grafana.github.io/helm-charts
+    condition: monitoring.grafana.enabled
+  - name: jaeger
+    version: "2.1.0"
+    repository: https://jaegertracing.github.io/helm-charts
+    condition: monitoring.jaeger.enabled
+
+annotations:
+  category: Application
+  licenses: Apache-2.0

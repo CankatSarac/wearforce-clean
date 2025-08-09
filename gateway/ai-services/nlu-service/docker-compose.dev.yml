@@ -1,0 +1,242 @@
+version: '3.8'
+
+services:
+  # NLU Service
+  nlu-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - SERVICE_NAME=nlu-service
+      - PORT=8003
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - ENVIRONMENT=development
+      
+      # Redis connection
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=1
+      
+      # Database connection
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=nlu_user
+      - DB_PASSWORD=nlu_password
+      - DB_NAME=nlu_db
+      
+      # Service URLs
+      - LLM_SERVICE_URL=http://llm-service:8004
+      - RAG_SERVICE_URL=http://rag-service:8005
+      - CRM_API_URL=http://crm-mock:3000/api
+      - ERP_API_URL=http://erp-mock:3001/api
+      
+      # NLU specific settings
+      - MAX_CONVERSATION_HISTORY=50
+      - CONVERSATION_TTL=3600
+      - RATE_LIMIT_PER_MINUTE=120
+      
+    volumes:
+      - .:/app/nlu-service
+      - ../shared:/app/shared
+    depends_on:
+      - redis
+      - postgres
+      - crm-mock
+      - erp-mock
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ai-services
+
+  # Redis for conversation storage
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - ai-services
+
+  # PostgreSQL for persistent data
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=nlu_db
+      - POSTGRES_USER=nlu_user
+      - POSTGRES_PASSWORD=nlu_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nlu_user -d nlu_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - ai-services
+
+  # Mock CRM Service for testing
+  crm-mock:
+    image: mockserver/mockserver:5.15.0
+    ports:
+      - "3000:1080"
+    environment:
+      - MOCKSERVER_PROPERTY_FILE=/config/mockserver.properties
+      - MOCKSERVER_INITIALIZATION_JSON_PATH=/config/crm-expectations.json
+    volumes:
+      - ./mocks/crm-expectations.json:/config/crm-expectations.json:ro
+      - ./mocks/mockserver.properties:/config/mockserver.properties:ro
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+  # Mock ERP Service for testing
+  erp-mock:
+    image: mockserver/mockserver:5.15.0
+    ports:
+      - "3001:1080"
+    environment:
+      - MOCKSERVER_PROPERTY_FILE=/config/mockserver.properties
+      - MOCKSERVER_INITIALIZATION_JSON_PATH=/config/erp-expectations.json
+    volumes:
+      - ./mocks/erp-expectations.json:/config/erp-expectations.json:ro
+      - ./mocks/mockserver.properties:/config/mockserver.properties:ro
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+  # LLM Service (for testing integration)
+  llm-service:
+    image: wearforce-clean/llm-service:latest
+    ports:
+      - "8004:8004"
+    environment:
+      - SERVICE_NAME=llm-service
+      - PORT=8004
+      - MODEL_PATH=/app/models
+      - GPU_MEMORY_UTILIZATION=0.7
+    volumes:
+      - llm_models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+  # RAG Service (for testing integration)
+  rag-service:
+    image: wearforce-clean/rag-service:latest
+    ports:
+      - "8005:8005"
+    environment:
+      - SERVICE_NAME=rag-service
+      - PORT=8005
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+  # Qdrant vector database for RAG
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.40.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:9.3.0
+    ports:
+      - "3003:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:1.41
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: unless-stopped
+    networks:
+      - ai-services
+
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  llm_models:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  ai-services:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

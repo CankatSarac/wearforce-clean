@@ -1,0 +1,374 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-monitor
+  namespace: monitoring
+  labels:
+    app: health-monitor
+    component: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-monitor
+  template:
+    metadata:
+      labels:
+        app: health-monitor
+        component: monitoring
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: health-monitor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: health-monitor
+        image: wearforce-clean/health-monitor:latest
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: REDIS_URL
+          value: "redis://redis:6379/0"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: url
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: CHECK_INTERVAL
+          value: "30"
+        - name: EXTERNAL_APIS
+          value: |
+            [
+              {"name": "stripe", "url": "https://api.stripe.com/health", "timeout": 10},
+              {"name": "sendgrid", "url": "https://api.sendgrid.com/v3/health", "timeout": 10},
+              {"name": "twilio", "url": "https://api.twilio.com/health", "timeout": 10}
+            ]
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: config
+        configMap:
+          name: health-monitor-config
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-monitor-config
+  namespace: monitoring
+  labels:
+    app: health-monitor
+data:
+  health-checks.yaml: |
+    checks:
+      # Internal service health checks
+      - name: "crm-service"
+        type: "http"
+        url: "http://crm-service:8001/health"
+        timeout: 10
+        critical: true
+        component_type: "internal_service"
+        
+      - name: "erp-service"
+        type: "http"
+        url: "http://erp-service:8002/health"
+        timeout: 10
+        critical: true
+        component_type: "internal_service"
+        
+      - name: "notification-service"
+        type: "http"
+        url: "http://notification-service:8003/health"
+        timeout: 10
+        critical: true
+        component_type: "internal_service"
+        
+      - name: "graphql-gateway"
+        type: "http"
+        url: "http://graphql-gateway:8000/health"
+        timeout: 10
+        critical: true
+        component_type: "internal_service"
+        
+      # Database health checks
+      - name: "postgres-primary"
+        type: "database"
+        connection_string: "${DATABASE_URL}"
+        timeout: 15
+        critical: true
+        component_type: "database"
+        
+      - name: "redis-cache"
+        type: "redis"
+        connection_string: "${REDIS_URL}"
+        timeout: 10
+        critical: true
+        component_type: "cache"
+        
+      # Message queue health checks
+      - name: "nats-jetstream"
+        type: "nats"
+        connection_string: "nats://nats:4222"
+        timeout: 10
+        critical: true
+        component_type: "message_queue"
+        
+      # External API health checks
+      - name: "stripe-api"
+        type: "http"
+        url: "https://api.stripe.com/health"
+        timeout: 15
+        critical: false
+        component_type: "external_api"
+        headers:
+          User-Agent: "WearForce-HealthMonitor/1.0"
+          
+      - name: "sendgrid-api"
+        type: "http"
+        url: "https://api.sendgrid.com/v3/health"
+        timeout: 15
+        critical: false
+        component_type: "external_api"
+        
+      - name: "twilio-api"
+        type: "http"
+        url: "https://api.twilio.com/health"
+        timeout: 15
+        critical: false
+        component_type: "external_api"
+    
+    failover:
+      handlers:
+        database:
+          - type: "notification"
+            webhook: "${ALERT_WEBHOOK_URL}"
+            severity: "critical"
+          - type: "circuit_breaker"
+            failure_threshold: 3
+            recovery_timeout: 300
+            
+        cache:
+          - type: "circuit_breaker"
+            failure_threshold: 5
+            recovery_timeout: 60
+            
+        external_api:
+          - type: "circuit_breaker"
+            failure_threshold: 10
+            recovery_timeout: 120
+            
+    circuit_breakers:
+      default:
+        failure_threshold: 5
+        recovery_timeout: 60
+        expected_exception: "Exception"
+        
+      database:
+        failure_threshold: 3
+        recovery_timeout: 300
+        expected_exception: "DatabaseError"
+        
+      external_api:
+        failure_threshold: 10
+        recovery_timeout: 120
+        expected_exception: "HTTPError"
+    
+    monitoring:
+      check_interval: 30  # seconds
+      history_size: 100
+      alert_thresholds:
+        consecutive_failures: 3
+        failure_rate_window: 300  # 5 minutes
+        failure_rate_threshold: 0.1  # 10%
+        
+    notifications:
+      webhooks:
+        - name: "slack-critical"
+          url: "${SLACK_WEBHOOK_URL}"
+          events: ["failover", "recovery", "critical_failure"]
+          
+        - name: "pagerduty"
+          url: "${PAGERDUTY_WEBHOOK_URL}"
+          events: ["failover", "critical_failure"]
+          headers:
+            Authorization: "Token ${PAGERDUTY_TOKEN}"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-monitor
+  namespace: monitoring
+  labels:
+    app: health-monitor
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: health-monitor
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: health-monitor
+  namespace: monitoring
+  labels:
+    app: health-monitor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: health-monitor
+  labels:
+    app: health-monitor
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: health-monitor
+  labels:
+    app: health-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: health-monitor
+subjects:
+- kind: ServiceAccount
+  name: health-monitor
+  namespace: monitoring
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: health-monitor
+  namespace: monitoring
+  labels:
+    app: health-monitor
+spec:
+  selector:
+    matchLabels:
+      app: health-monitor
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: health-monitor
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: health-monitor
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - namespaceSelector:
+        matchLabels:
+          name: wearforce-clean-app
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - {} # Allow all outbound traffic for health checks
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: health-monitor
+  namespace: monitoring
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: health-monitor
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60

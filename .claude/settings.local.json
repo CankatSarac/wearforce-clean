@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(go mod init:*)",
+      "Bash(wget:*)",
+      "Bash(sudo rm:*)",
+      "Bash(sudo tar:*)",
+      "Bash(tar:*)",
+      "Bash(export PATH=~/go/bin:$PATH)",
+      "Bash(export GOPATH=~/gopath)",
+      "Bash(go:*)",
+      "Bash(rm:*)",
+      "Bash(unzip:*)",
+      "Bash(chmod:*)",
+      "Bash(python3:*)",
+      "Bash(ls:*)",
+      "Bash(export PATH=~/gopath/bin:~/protoc/bin:$PATH)",
+      "Bash(protoc:*)",
+      "Bash(find:*)",
+      "Bash(mv:*)",
+      "Bash(export PATH=~/gopath/bin:$PATH)",
+      "Bash(touch:*)",
+      "Bash(python:*)",
+      "Bash(npm --version)",
+      "Bash(cp:*)"
+    ],
+    "deny": []
+  }
+}

@@ -1,0 +1,652 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slo-definitions
+  namespace: monitoring
+  labels:
+    app: slo-monitor
+data:
+  slos.yaml: |
+    # WearForce Platform SLO Definitions
+    # Service Level Objectives for business-critical services
+    
+    global_slos:
+      # Overall platform availability
+      platform_availability:
+        name: "Platform Availability"
+        description: "Overall platform should be available 99.9% of the time"
+        target: 0.999
+        window: "30d"
+        metric: "availability"
+        error_budget: 43.2  # minutes per month
+        
+      # API response time
+      api_latency:
+        name: "API Response Time"
+        description: "95% of API requests should complete within 500ms"
+        target: 0.95
+        threshold: "500ms"
+        window: "24h"
+        metric: "latency"
+        
+      # Error rate
+      error_rate:
+        name: "Platform Error Rate"
+        description: "Error rate should be less than 0.1%"
+        target: 0.999
+        threshold: "0.1%"
+        window: "24h"
+        metric: "reliability"
+    
+    service_slos:
+      # CRM Service SLOs
+      crm_service:
+        availability:
+          name: "CRM Service Availability"
+          description: "CRM service should be available 99.95% of the time"
+          target: 0.9995
+          window: "30d"
+          error_budget: 21.6  # minutes per month
+          alerting_rules:
+            - name: "CRM_Service_Down"
+              condition: "up{job='wearforce-clean-crm'} == 0"
+              for: "1m"
+              severity: "critical"
+            - name: "CRM_Error_Budget_Burn"
+              condition: "slo_error_budget_remaining{service='crm'} < 0.1"
+              for: "5m"
+              severity: "warning"
+              
+        latency:
+          name: "CRM Response Time"
+          description: "95% of CRM requests should complete within 300ms"
+          target: 0.95
+          threshold: "300ms"
+          window: "1h"
+          alerting_rules:
+            - name: "CRM_High_Latency"
+              condition: "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job='wearforce-clean-crm'}[5m])) > 0.3"
+              for: "5m"
+              severity: "warning"
+              
+        error_rate:
+          name: "CRM Error Rate"
+          description: "CRM error rate should be less than 0.05%"
+          target: 0.9995
+          threshold: "0.05%"
+          window: "1h"
+          alerting_rules:
+            - name: "CRM_High_Error_Rate"
+              condition: "rate(http_requests_total{job='wearforce-clean-crm',status=~'5..'}[5m]) / rate(http_requests_total{job='wearforce-clean-crm'}[5m]) > 0.0005"
+              for: "5m"
+              severity: "critical"
+              
+        business_metrics:
+          customer_data_integrity:
+            name: "Customer Data Integrity"
+            description: "Customer data operations should succeed 99.99% of the time"
+            target: 0.9999
+            window: "24h"
+            
+      # ERP Service SLOs
+      erp_service:
+        availability:
+          name: "ERP Service Availability"
+          description: "ERP service should be available 99.9% of the time"
+          target: 0.999
+          window: "30d"
+          error_budget: 43.2  # minutes per month
+          
+        latency:
+          name: "ERP Response Time"
+          description: "95% of ERP requests should complete within 500ms"
+          target: 0.95
+          threshold: "500ms"
+          window: "1h"
+          
+        inventory_consistency:
+          name: "Inventory Data Consistency"
+          description: "Inventory updates should be consistent 99.95% of the time"
+          target: 0.9995
+          window: "24h"
+          business_impact: "high"
+          
+      # GraphQL Gateway SLOs
+      graphql_gateway:
+        availability:
+          name: "GraphQL Gateway Availability"
+          description: "GraphQL gateway should be available 99.95% of the time"
+          target: 0.9995
+          window: "30d"
+          error_budget: 21.6  # minutes per month
+          
+        latency:
+          name: "GraphQL Response Time"
+          description: "90% of GraphQL queries should complete within 200ms"
+          target: 0.90
+          threshold: "200ms"
+          window: "1h"
+          
+        query_complexity:
+          name: "Query Complexity Limit"
+          description: "Complex queries should be limited to maintain performance"
+          target: "complexity < 100"
+          window: "5m"
+          
+      # Notification Service SLOs
+      notification_service:
+        availability:
+          name: "Notification Service Availability"
+          description: "Notification service should be available 99.9% of the time"
+          target: 0.999
+          window: "30d"
+          
+        delivery_rate:
+          name: "Notification Delivery Rate"
+          description: "95% of notifications should be delivered successfully"
+          target: 0.95
+          window: "1h"
+          business_impact: "medium"
+          
+        delivery_latency:
+          name: "Notification Delivery Time"
+          description: "90% of notifications should be delivered within 30 seconds"
+          target: 0.90
+          threshold: "30s"
+          window: "1h"
+    
+    infrastructure_slos:
+      # Database SLOs
+      database:
+        availability:
+          name: "Database Availability"
+          description: "Database should be available 99.99% of the time"
+          target: 0.9999
+          window: "30d"
+          error_budget: 4.32  # minutes per month
+          
+        query_performance:
+          name: "Database Query Performance"
+          description: "95% of database queries should complete within 100ms"
+          target: 0.95
+          threshold: "100ms"
+          window: "1h"
+          
+        connection_pool:
+          name: "Database Connection Pool"
+          description: "Connection pool utilization should be below 80%"
+          target: "utilization < 0.8"
+          window: "5m"
+          
+      # Cache (Redis) SLOs
+      cache:
+        availability:
+          name: "Cache Availability"
+          description: "Redis cache should be available 99.95% of the time"
+          target: 0.9995
+          window: "30d"
+          
+        hit_rate:
+          name: "Cache Hit Rate"
+          description: "Cache hit rate should be above 90%"
+          target: 0.90
+          window: "1h"
+          
+        response_time:
+          name: "Cache Response Time"
+          description: "95% of cache operations should complete within 5ms"
+          target: 0.95
+          threshold: "5ms"
+          window: "1h"
+    
+    business_slos:
+      # Customer Experience SLOs
+      customer_experience:
+        page_load_time:
+          name: "Page Load Time"
+          description: "90% of pages should load within 2 seconds"
+          target: 0.90
+          threshold: "2s"
+          window: "1h"
+          business_impact: "high"
+          
+        checkout_success_rate:
+          name: "Checkout Success Rate"
+          description: "99% of checkout attempts should succeed"
+          target: 0.99
+          window: "1h"
+          business_impact: "critical"
+          
+        search_performance:
+          name: "Search Performance"
+          description: "95% of search queries should return results within 500ms"
+          target: 0.95
+          threshold: "500ms"
+          window: "1h"
+          
+      # Business Process SLOs
+      order_processing:
+        completion_time:
+          name: "Order Processing Time"
+          description: "95% of orders should be processed within 5 minutes"
+          target: 0.95
+          threshold: "300s"
+          window: "4h"
+          business_impact: "high"
+          
+        accuracy_rate:
+          name: "Order Accuracy"
+          description: "99.5% of orders should be processed without errors"
+          target: 0.995
+          window: "24h"
+          business_impact: "high"
+          
+      # Data Pipeline SLOs
+      data_pipeline:
+        freshness:
+          name: "Data Freshness"
+          description: "Analytics data should be updated within 15 minutes"
+          target: "lag < 15m"
+          window: "1h"
+          
+        completeness:
+          name: "Data Completeness"
+          description: "99.9% of expected data should be processed"
+          target: 0.999
+          window: "24h"
+    
+    security_slos:
+      # Security Monitoring SLOs
+      threat_detection:
+        detection_time:
+          name: "Threat Detection Time"
+          description: "95% of security threats should be detected within 5 minutes"
+          target: 0.95
+          threshold: "300s"
+          window: "1h"
+          business_impact: "critical"
+          
+        false_positive_rate:
+          name: "False Positive Rate"
+          description: "False positive rate should be below 5%"
+          target: "rate < 0.05"
+          window: "24h"
+          
+      # Authentication SLOs
+      authentication:
+        availability:
+          name: "Authentication Service Availability"
+          description: "Authentication should be available 99.99% of the time"
+          target: 0.9999
+          window: "30d"
+          business_impact: "critical"
+          
+        response_time:
+          name: "Authentication Response Time"
+          description: "95% of authentication requests should complete within 200ms"
+          target: 0.95
+          threshold: "200ms"
+          window: "1h"
+    
+    # SLO Reporting Configuration
+    reporting:
+      dashboards:
+        - name: "Executive SLO Dashboard"
+          audience: "executive"
+          metrics: ["platform_availability", "error_rate", "checkout_success_rate"]
+          update_frequency: "hourly"
+          
+        - name: "Engineering SLO Dashboard"
+          audience: "engineering"
+          metrics: ["service_availability", "latency", "error_rate", "error_budget"]
+          update_frequency: "real-time"
+          
+        - name: "Business SLO Dashboard"
+          audience: "business"
+          metrics: ["customer_experience", "order_processing", "data_pipeline"]
+          update_frequency: "hourly"
+      
+      alerts:
+        escalation_policy:
+          - level: "warning"
+            notification_delay: "5m"
+            channels: ["slack", "email"]
+            
+          - level: "critical"
+            notification_delay: "1m"
+            channels: ["slack", "email", "pagerduty"]
+            
+          - level: "emergency"
+            notification_delay: "immediate"
+            channels: ["slack", "email", "pagerduty", "sms"]
+      
+      error_budget_policy:
+        burn_rate_alerts:
+          - name: "Fast Burn"
+            condition: "burn_rate > 14.4"  # 1% error budget in 1 hour
+            window: "1h"
+            severity: "critical"
+            
+          - name: "Moderate Burn"
+            condition: "burn_rate > 6"     # 1% error budget in 2.5 hours
+            window: "6h"
+            severity: "warning"
+            
+          - name: "Slow Burn"
+            condition: "burn_rate > 1"     # 1% error budget in 1 day
+            window: "3d"
+            severity: "warning"
+        
+        freeze_policy:
+          - condition: "error_budget_remaining < 0.1"
+            action: "freeze_deployments"
+            duration: "until_error_budget_recovered"
+            
+          - condition: "error_budget_remaining < 0.05"
+            action: "emergency_response"
+            escalate_to: "on_call_engineer"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slo-recording-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+data:
+  slo-rules.yml: |
+    groups:
+    - name: slo.rules
+      interval: 30s
+      rules:
+      
+      # Availability SLI calculations
+      - record: sli:availability:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[5m])) -
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*",status=~"5.."}[5m]))
+          ) /
+          sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[5m]))
+          
+      - record: sli:availability:ratio_rate30m
+        expr: |
+          (
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[30m])) -
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*",status=~"5.."}[30m]))
+          ) /
+          sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[30m]))
+          
+      - record: sli:availability:ratio_rate2h
+        expr: |
+          (
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[2h])) -
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*",status=~"5.."}[2h]))
+          ) /
+          sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[2h]))
+          
+      - record: sli:availability:ratio_rate6h
+        expr: |
+          (
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[6h])) -
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*",status=~"5.."}[6h]))
+          ) /
+          sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[6h]))
+          
+      - record: sli:availability:ratio_rate1d
+        expr: |
+          (
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[1d])) -
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*",status=~"5.."}[1d]))
+          ) /
+          sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[1d]))
+          
+      - record: sli:availability:ratio_rate3d
+        expr: |
+          (
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[3d])) -
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*",status=~"5.."}[3d]))
+          ) /
+          sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[3d]))
+          
+      - record: sli:availability:ratio_rate30d
+        expr: |
+          (
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[30d])) -
+            sum(rate(http_requests_total{job=~"wearforce-clean-.*",status=~"5.."}[30d]))
+          ) /
+          sum(rate(http_requests_total{job=~"wearforce-clean-.*"}[30d]))
+      
+      # Latency SLI calculations (95th percentile < 500ms)
+      - record: sli:latency:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_bucket{job=~"wearforce-clean-.*",le="0.5"}[5m])) /
+            sum(rate(http_request_duration_seconds_count{job=~"wearforce-clean-.*"}[5m]))
+          )
+          
+      - record: sli:latency:ratio_rate30m
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_bucket{job=~"wearforce-clean-.*",le="0.5"}[30m])) /
+            sum(rate(http_request_duration_seconds_count{job=~"wearforce-clean-.*"}[30m]))
+          )
+          
+      - record: sli:latency:ratio_rate1h
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_bucket{job=~"wearforce-clean-.*",le="0.5"}[1h])) /
+            sum(rate(http_request_duration_seconds_count{job=~"wearforce-clean-.*"}[1h]))
+          )
+          
+      - record: sli:latency:ratio_rate2h
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_bucket{job=~"wearforce-clean-.*",le="0.5"}[2h])) /
+            sum(rate(http_request_duration_seconds_count{job=~"wearforce-clean-.*"}[2h]))
+          )
+          
+      - record: sli:latency:ratio_rate6h
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_bucket{job=~"wearforce-clean-.*",le="0.5"}[6h])) /
+            sum(rate(http_request_duration_seconds_count{job=~"wearforce-clean-.*"}[6h]))
+          )
+          
+      # Error budget calculations
+      - record: slo:error_budget:availability
+        expr: 1 - 0.999  # 99.9% availability target = 0.1% error budget
+        
+      - record: slo:error_budget_remaining:availability
+        expr: |
+          (slo:error_budget:availability - (1 - sli:availability:ratio_rate30d)) /
+          slo:error_budget:availability
+          
+      # Burn rate calculations
+      - record: slo:burn_rate:availability:5m
+        expr: |
+          (1 - sli:availability:ratio_rate5m) / slo:error_budget:availability
+          
+      - record: slo:burn_rate:availability:30m
+        expr: |
+          (1 - sli:availability:ratio_rate30m) / slo:error_budget:availability
+          
+      - record: slo:burn_rate:availability:1h
+        expr: |
+          (1 - sli:availability:ratio_rate1h) / slo:error_budget:availability
+          
+      - record: slo:burn_rate:availability:6h
+        expr: |
+          (1 - sli:availability:ratio_rate6h) / slo:error_budget:availability
+          
+      # Service-specific SLIs
+      - record: sli:crm:availability:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_requests_total{job="wearforce-clean-crm"}[5m])) -
+            sum(rate(http_requests_total{job="wearforce-clean-crm",status=~"5.."}[5m]))
+          ) /
+          sum(rate(http_requests_total{job="wearforce-clean-crm"}[5m]))
+          
+      - record: sli:crm:latency:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_request_duration_seconds_bucket{job="wearforce-clean-crm",le="0.3"}[5m])) /
+            sum(rate(http_request_duration_seconds_count{job="wearforce-clean-crm"}[5m]))
+          )
+          
+      - record: sli:erp:availability:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_requests_total{job="wearforce-clean-erp"}[5m])) -
+            sum(rate(http_requests_total{job="wearforce-clean-erp",status=~"5.."}[5m]))
+          ) /
+          sum(rate(http_requests_total{job="wearforce-clean-erp"}[5m]))
+          
+      - record: sli:graphql:availability:ratio_rate5m
+        expr: |
+          (
+            sum(rate(http_requests_total{job="wearforce-clean-graphql"}[5m])) -
+            sum(rate(http_requests_total{job="wearforce-clean-graphql",status=~"5.."}[5m]))
+          ) /
+          sum(rate(http_requests_total{job="wearforce-clean-graphql"}[5m]))
+          
+      # Business SLIs
+      - record: sli:checkout:success_rate:5m
+        expr: |
+          sum(rate(wearforce-clean_checkout_success_total[5m])) /
+          sum(rate(wearforce-clean_checkout_attempts_total[5m]))
+          
+      - record: sli:order_processing:completion_rate:1h
+        expr: |
+          sum(rate(wearforce-clean_orders_completed_total[1h])) /
+          sum(rate(wearforce-clean_orders_created_total[1h]))
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: slo-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+data:
+  slo-alerts.yml: |
+    groups:
+    - name: slo.alerts
+      rules:
+      
+      # Multi-window, multi-burn-rate alerts for availability SLO
+      - alert: ErrorBudgetBurnRateCritical
+        expr: |
+          (
+            slo:burn_rate:availability:5m > 14.4
+            and
+            slo:burn_rate:availability:1h > 14.4
+          )
+          or
+          (
+            slo:burn_rate:availability:30m > 6
+            and
+            slo:burn_rate:availability:6h > 6
+          )
+        for: 2m
+        labels:
+          severity: critical
+          service: platform
+          slo: availability
+        annotations:
+          summary: "Critical error budget burn rate"
+          description: "The error budget for availability SLO is burning at {{ $value }}x the normal rate"
+          
+      - alert: ErrorBudgetBurnRateWarning
+        expr: |
+          (
+            slo:burn_rate:availability:30m > 3
+            and
+            slo:burn_rate:availability:6h > 3
+          )
+          or
+          (
+            slo:burn_rate:availability:6h > 1
+            and
+            slo:burn_rate:availability:3d > 1
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: platform
+          slo: availability
+        annotations:
+          summary: "High error budget burn rate"
+          description: "The error budget for availability SLO is burning at {{ $value }}x the normal rate"
+          
+      # Error budget remaining alerts
+      - alert: ErrorBudgetLow
+        expr: slo:error_budget_remaining:availability < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: platform
+          slo: availability
+        annotations:
+          summary: "Error budget running low"
+          description: "Only {{ $value | humanizePercentage }} of error budget remaining for availability SLO"
+          
+      - alert: ErrorBudgetCritical
+        expr: slo:error_budget_remaining:availability < 0.05
+        for: 1m
+        labels:
+          severity: critical
+          service: platform
+          slo: availability
+        annotations:
+          summary: "Error budget critically low"
+          description: "Only {{ $value | humanizePercentage }} of error budget remaining - consider deployment freeze"
+          
+      # Service-specific SLO alerts
+      - alert: CRMServiceSLOBreach
+        expr: sli:crm:availability:ratio_rate5m < 0.9995
+        for: 5m
+        labels:
+          severity: critical
+          service: crm
+          slo: availability
+        annotations:
+          summary: "CRM service availability SLO breach"
+          description: "CRM service availability is {{ $value | humanizePercentage }} (target: 99.95%)"
+          
+      - alert: CRMLatencySLOBreach
+        expr: sli:crm:latency:ratio_rate5m < 0.95
+        for: 5m
+        labels:
+          severity: warning
+          service: crm
+          slo: latency
+        annotations:
+          summary: "CRM service latency SLO breach"
+          description: "CRM service 95th percentile latency target not met"
+          
+      # Business SLO alerts
+      - alert: CheckoutSLOBreach
+        expr: sli:checkout:success_rate:5m < 0.99
+        for: 2m
+        labels:
+          severity: critical
+          service: business
+          slo: checkout_success_rate
+        annotations:
+          summary: "Checkout success rate SLO breach"
+          description: "Checkout success rate is {{ $value | humanizePercentage }} (target: 99%)"
+          
+      - alert: OrderProcessingSLOBreach
+        expr: sli:order_processing:completion_rate:1h < 0.95
+        for: 10m
+        labels:
+          severity: warning
+          service: business
+          slo: order_processing
+        annotations:
+          summary: "Order processing SLO breach"
+          description: "Order processing completion rate is {{ $value | humanizePercentage }} (target: 95%)"
